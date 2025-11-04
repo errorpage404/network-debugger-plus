@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Network Debugger Plus",
+  "version": "1.0.0",
+  "description": "Advanced network request inspector with filtering and payload viewer",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "webRequest",
+    "activeTab",
+    "debugger",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "devtools_page": "devtools.html"
+}
+

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Network Debugger Plus Panel</title>
+  <link rel="stylesheet" href="styles/panel.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header Section -->
+    <div class="header">
+      <h2>Network Debugger Plus</h2>
+      <div class="controls">
+        <button id="darkModeBtn" class="btn btn-icon" title="Toggle dark mode">🌙</button>
+        <button id="clearBtn" class="btn btn-secondary">Clear</button>
+        <button id="recordBtn" class="btn btn-primary">⏺ Recording</button>
+      </div>
+    </div>
+
+    <!-- Filter Section -->
+    <div class="filter-section">
+      <div class="filter-group">
+        <label for="filterInput">Request URL Contains:</label>
+        <input 
+          type="text" 
+          id="filterInput" 
+          placeholder="Enter keywords to filter requests by URL (e.g., api, json, user)"
+          class="filter-input"
+        />
+      </div>
+    </div>
+
+    <!-- Main Content Area -->
+    <div class="main-content">
+      <!-- Request List -->
+      <div class="request-list-container">
+        <div class="request-list-header">
+          <span class="col-method">Method</span>
+          <div class="column-resize-handle" data-column="method"></div>
+          <span class="col-url">Name</span>
+          <div class="column-resize-handle" data-column="url"></div>
+          <span class="col-status">Status</span>
+          <div class="column-resize-handle" data-column="status"></div>
+          <span class="col-type">Type</span>
+          <div class="column-resize-handle" data-column="type"></div>
+          <span class="col-size">Size</span>
+          <div class="column-resize-handle" data-column="size"></div>
+        </div>
+        <div id="requestList" class="request-list">
+          <div class="empty-state">
+            <p>No requests match the current filter. Please try refreshing the page or check your spelling.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Resize Handle -->
+      <div id="resizeHandle" class="resize-handle"></div>
+
+      <!-- Request Details -->
+      <div id="requestDetails" class="request-details hidden">
+        <div class="details-header">
+          <h3>Request Details</h3>
+          <button id="closeDetailsBtn" class="btn-close">✕</button>
+        </div>
+        
+        <div class="details-tabs">
+          <button class="tab-btn active" data-tab="headers">Headers</button>
+          <button class="tab-btn" data-tab="payload">Payload</button>
+          <button class="tab-btn" data-tab="response">Response</button>
+        </div>
+
+        <div class="details-content">
+          <div id="headersTab" class="tab-content active">
+            <div class="section">
+              <h4>General</h4>
+              <div id="generalInfo" class="info-group"></div>
+            </div>
+            <div class="section">
+              <h4>Request Headers</h4>
+              <div id="requestHeaders" class="info-group"></div>
+            </div>
+            <div class="section">
+              <h4>Response Headers</h4>
+              <div id="responseHeaders" class="info-group"></div>
+            </div>
+          </div>
+
+          <div id="payloadTab" class="tab-content">
+            <div id="payloadContent" class="payload-viewer"></div>
+          </div>
+
+          <div id="responseTab" class="tab-content">
+            <div id="responseContent" class="response-viewer"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="utils/jsonTreeView.js"></script>
+  <script src="utils/requestManager.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>
+

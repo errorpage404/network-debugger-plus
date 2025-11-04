@@ -1,0 +1,20 @@
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Editor directories
+.vscode/
+.idea/
+
+# Extension package
+*.zip
+*.crx
+*.pem
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+
