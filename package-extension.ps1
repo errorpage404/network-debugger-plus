@@ -37,6 +37,16 @@ $filesToInclude = @(
     "icons\icon128.png"
 )
 
+# Files/folders to exclude from icons directory
+$iconsExclude = @(
+    "icons\manifest.json",
+    "icons\*.xml",
+    "icons\*.html",
+    "icons\*.ico",
+    "icons\create-icons.html",
+    "icons\browserconfig.xml"
+)
+
 # Copy files
 Write-Host "`nCopying required files..." -ForegroundColor Cyan
 foreach ($file in $filesToInclude) {
@@ -53,6 +63,15 @@ foreach ($file in $filesToInclude) {
     } else {
         Write-Host "  ✗ $file (NOT FOUND)" -ForegroundColor Red
     }
+}
+
+# Verify no duplicate manifest.json exists
+Write-Host "`nVerifying package structure..." -ForegroundColor Cyan
+$duplicateManifest = Join-Path $tempDir "icons\manifest.json"
+if (Test-Path $duplicateManifest) {
+    Write-Host "  ⚠ Removing duplicate manifest.json from icons folder..." -ForegroundColor Yellow
+    Remove-Item -Path $duplicateManifest -Force
+    Write-Host "  ✓ Removed duplicate manifest.json" -ForegroundColor Green
 }
 
 # Remove old zip if exists

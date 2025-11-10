@@ -75,12 +75,9 @@
     <h2>Required Permissions</h2>
     <p>Network Debugger Plus requires the following permissions to function:</p>
     <ul>
-        <li><strong>webRequest</strong>: To monitor network traffic for debugging purposes. This permission allows the extension to see network requests but does not allow modification or interception of requests.</li>
-        <li><strong>activeTab</strong>: To access the current tab's network activity when DevTools is open.</li>
-        <li><strong>debugger</strong>: To capture network events via Chrome's Debugger API. This is required to monitor network requests in real-time.</li>
-        <li><strong>tabs</strong>: To open request URLs in new tabs when you double-click on a request (optional feature).</li>
-        <li><strong>&lt;all_urls&gt;</strong>: Required to monitor network requests on all websites. This allows the extension to work on any website you visit.</li>
+        <li><strong>debugger</strong>: To capture network events via Chrome's Debugger API. This is required to monitor network requests in real-time. The debugger API allows the extension to attach to browser tabs and capture network events without needing host permissions.</li>
     </ul>
+    <p><strong>Note:</strong> The extension can open URLs in new tabs when you double-click on a request. This functionality works in DevTools context without requiring additional permissions.</p>
     
     <h2>Third-Party Services</h2>
     <p>Network Debugger Plus does not use any third-party services, analytics, or tracking tools.</p>
