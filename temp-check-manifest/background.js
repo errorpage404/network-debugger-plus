@@ -5,12 +5,6 @@ let messageQueue = new Map(); // tabId -> array of messages
 // Count requests captured by background (service workers don't have window)
 let bgRequestCount = 0;
 
-// Handle action icon click (for color icon display in extensions menu)
-chrome.action.onClicked.addListener((tab) => {
-  // DevTools extension - just log that user should open DevTools
-  console.log('[Network Debugger Plus] Open Chrome DevTools (F12) and look for the "Network Debugger Plus" tab to use this extension.');
-});
-
 // Listen for messages from the panel
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'attachDebugger') {

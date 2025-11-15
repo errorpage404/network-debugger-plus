@@ -106,11 +106,9 @@ This guide will help you publish **Network Debugger Plus** to the Chrome Web Sto
 1. **Single Purpose**: Explain that your extension's purpose is to help developers debug network requests in Chrome DevTools
 
 2. **Permission Justification**:
-   - `webRequest`: To monitor network traffic
-   - `activeTab`: To access the current tab's network activity
-   - `debugger`: To capture network events via Chrome Debugger API
-   - `tabs`: To open URLs in new tabs when double-clicked
-   - `<all_urls>`: To monitor network requests on all websites
+   - `debugger`: To capture network events via Chrome Debugger API. This allows monitoring network requests on all websites without requiring host permissions.
+
+   **Note:** The extension can open URLs in new tabs when double-clicked. This functionality works in DevTools context without requiring the `tabs` permission.
 
 3. **Data Handling**:
    - ✅ User data is NOT collected

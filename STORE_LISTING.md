@@ -114,11 +114,9 @@ For the Privacy tab, use this summary:
 Network Debugger Plus helps developers debug and inspect network requests in Chrome DevTools.
 
 **Permission Justifications:**
-- `webRequest`: To monitor network traffic for debugging purposes
-- `activeTab`: To access the current tab's network activity when DevTools is open
-- `debugger`: To capture network events via Chrome Debugger API (required for real-time monitoring)
-- `tabs`: To open request URLs in new tabs when double-clicked (optional feature)
-- `<all_urls>`: Required to monitor network requests on all websites
+- `debugger`: To capture network events via Chrome Debugger API (required for real-time monitoring). The debugger API allows monitoring network requests on all websites without requiring host permissions.
+
+**Note:** The extension can open URLs in new tabs when double-clicked. This functionality works in DevTools context without requiring the `tabs` permission.
 
 **Data Handling:**
 - ✅ No user data collected

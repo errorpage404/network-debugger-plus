@@ -24,7 +24,6 @@ let startColumnWidth = 0;
 let pageStartTime = null; // Time when page navigation started
 let domContentLoadedTime = null; // DOMContentLoaded event time
 let loadTime = null; // Load event time
-let renderListTimeout = null; // Debounce timeout for renderRequestList
 
 // Set up message listener function - defined as const to ensure it's available
 const setupMessageListener = function() {
@@ -220,7 +219,7 @@ function setupEventListeners() {
         pageStartTime = Date.now();
         domContentLoadedTime = null;
         loadTime = null;
-        renderRequestList(true); // Immediate render for user interaction
+        renderRequestList();
         updateFooterStats();
         hideRequestDetails();
       });
@@ -265,7 +264,7 @@ function setupEventListeners() {
         requestManager.setFilter('text', filterValue);
         // Save to localStorage
         localStorage.setItem('networkInspectorFilter', filterValue);
-        renderRequestList(true); // Immediate render for user interaction
+        renderRequestList();
       });
     }
 
@@ -286,7 +285,7 @@ function setupEventListeners() {
             localStorage.setItem('networkInspectorTypeFilter', filterType);
             
             // Re-render list
-            renderRequestList(true); // Immediate render for user interaction
+            renderRequestList();
             updateFooterStats();
           }
         });
@@ -385,148 +384,10 @@ function setupEventListeners() {
   }
   
   // Use event delegation on request list for better reliability
-  // This works even when items are being re-rendered
-  let clickTimeout = null;
-  let lastClickedRequestId = null;
-  let lastClickTime = 0;
-  
   try {
     const requestListEl = document.getElementById('requestList');
     if (requestListEl) {
-      // Also use mousedown as backup - fires earlier than click
-      // This ensures we capture the requestId even if click event is lost
-      let mousedownRequestId = null;
-      requestListEl.addEventListener('mousedown', (e) => {
-        // Don't trigger if clicking on a resize handle
-        if (e.target.classList.contains('column-resize-handle')) {
-          return;
-        }
-        
-        // Find the closest request item
-        const requestItem = e.target.closest('.request-item');
-        if (requestItem) {
-          const requestId = requestItem.getAttribute('data-request-id');
-          if (requestId) {
-            mousedownRequestId = requestId;
-            // Store requestId immediately in case click doesn't fire
-            selectedRequestId = requestId;
-            
-            // Cancel any pending debounced renders immediately
-            if (renderListTimeout) {
-              clearTimeout(renderListTimeout);
-              renderListTimeout = null;
-            }
-          }
-        }
-      }, true);
-      
-      // If click doesn't fire within 100ms of mousedown, process it anyway
-      requestListEl.addEventListener('mouseup', (e) => {
-        if (mousedownRequestId) {
-          setTimeout(() => {
-            // If click didn't process this requestId, do it now
-            if (mousedownRequestId && selectedRequestId === mousedownRequestId) {
-              const request = requestManager.getRequest(mousedownRequestId);
-              if (request) {
-                showRequestDetails(mousedownRequestId);
-                renderRequestList(true);
-              }
-            }
-            mousedownRequestId = null;
-          }, 100);
-        }
-      }, true);
-      
-      // Single click handler - make it work immediately
-      // Use capture phase to catch clicks before they bubble
       requestListEl.addEventListener('click', (e) => {
-        // Don't trigger if clicking on a resize handle
-        if (e.target.classList.contains('column-resize-handle')) {
-          return;
-        }
-        
-        // Find the closest request item - do this FIRST before anything else
-        const requestItem = e.target.closest('.request-item');
-        if (!requestItem) {
-          return;
-        }
-        
-        // Get requestId IMMEDIATELY - before any DOM manipulation
-        const requestId = requestItem.getAttribute('data-request-id');
-        
-        if (!requestId) {
-          return;
-        }
-        
-        // Prevent default and stop propagation immediately
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        
-        // Cancel any pending debounced renders IMMEDIATELY - user interaction takes priority
-        if (renderListTimeout) {
-          clearTimeout(renderListTimeout);
-          renderListTimeout = null;
-        }
-        
-        const now = Date.now();
-        const timeSinceLastClick = now - lastClickTime;
-        
-        // Clear any pending click timeout
-        if (clickTimeout) {
-          clearTimeout(clickTimeout);
-          clickTimeout = null;
-        }
-        
-        // If same request clicked within 250ms, might be a double-click - wait a bit
-        if (requestId === lastClickedRequestId && timeSinceLastClick < 250) {
-          return;
-        }
-        
-        lastClickedRequestId = requestId;
-        lastClickTime = now;
-        
-        // Store requestId immediately so it works even if DOM changes
-        selectedRequestId = requestId;
-        
-        // Verify request exists before showing details
-        const request = requestManager.getRequest(requestId);
-        if (request) {
-          // Clear mousedown flag since click successfully processed
-          mousedownRequestId = null;
-          // Show details immediately - don't wait
-          showRequestDetails(requestId);
-          
-          // Re-render immediately to show selection
-          renderRequestList(true);
-        } else {
-          // Request not found yet - might still be loading
-          // Try again after a short delay
-          setTimeout(() => {
-            const retryRequest = requestManager.getRequest(requestId);
-            if (retryRequest) {
-              showRequestDetails(requestId);
-              renderRequestList(true);
-            } else {
-              // Still update selection even if details can't be shown
-              renderRequestList(true);
-            }
-          }, 50);
-        }
-        
-        // Set a small timeout just to prevent double-click from also triggering
-        clickTimeout = setTimeout(() => {
-          clickTimeout = null;
-        }, 50);
-      }, true); // Use capture phase to catch clicks early
-      
-      // Double-click handler
-      requestListEl.addEventListener('dblclick', (e) => {
-        // Don't trigger if clicking on a resize handle
-        if (e.target.classList.contains('column-resize-handle')) {
-          return;
-        }
-        
         // Find the closest request item
         const requestItem = e.target.closest('.request-item');
         if (requestItem) {
@@ -535,75 +396,15 @@ function setupEventListeners() {
             e.preventDefault();
             e.stopPropagation();
             
-            // Clear any pending single-click timeout
-            if (clickTimeout) {
-              clearTimeout(clickTimeout);
-              clickTimeout = null;
-            }
-            
-            // Get the request to open its URL
-            const request = requestManager.getRequest(requestId);
-            if (!request || !request.url) {
-              console.warn('[Double-click] Cannot open: request has no URL');
-              return;
-            }
-            
-            let requestUrl = request.url;
-            console.log('[Double-click] Opening URL:', requestUrl);
-            
-            // Ensure URL is absolute
-            try {
-              if (!requestUrl.startsWith('http://') && !requestUrl.startsWith('https://') && 
-                  !requestUrl.startsWith('chrome://') && !requestUrl.startsWith('chrome-extension://') &&
-                  !requestUrl.startsWith('data:') && !requestUrl.startsWith('blob:')) {
-                const inspectedUrl = chrome.devtools.inspectedWindow.url || '';
-                if (inspectedUrl) {
-                  try {
-                    const baseUrl = new URL(inspectedUrl);
-                    requestUrl = new URL(requestUrl, baseUrl.origin).href;
-                  } catch (urlErr) {
-                    console.warn('Cannot resolve relative URL:', requestUrl);
-                    return;
-                  }
-                } else {
-                  console.warn('Cannot resolve relative URL - no base URL available');
-                  return;
-                }
-              }
-              
-              new URL(requestUrl); // Validate
-              
-              if (chrome.tabs && chrome.tabs.create) {
-                chrome.tabs.create({ url: requestUrl }, (createdTab) => {
-                  if (chrome.runtime.lastError) {
-                    console.log('[Double-click] chrome.tabs.create failed, using window.open:', chrome.runtime.lastError.message);
-                    const newWindow = window.open(requestUrl, '_blank');
-                    if (!newWindow) {
-                      console.error('[Double-click] window.open also failed - popup may be blocked');
-                    }
-                  }
-                });
-              } else {
-                const newWindow = window.open(requestUrl, '_blank');
-                if (!newWindow) {
-                  console.error('[Double-click] window.open failed - popup may be blocked');
-                }
-              }
-            } catch (urlErr) {
-              console.warn('Error parsing URL, trying window.open:', urlErr);
-              try {
-                window.open(requestUrl, '_blank');
-              } catch (fallbackErr) {
-                console.error('Error opening URL in new tab:', fallbackErr);
-              }
-            }
+            selectedRequestId = requestId;
+            showRequestDetails(requestId);
+            renderRequestList();
           }
         }
       });
     }
   } catch (err) {
     // Ignore errors setting up request list listener
-    console.error('Error setting up request list event delegation:', err);
   }
 
   // Message listener is already set up earlier in initialization
@@ -1229,29 +1030,7 @@ function updateFooterStats() {
   }
 }
 
-function renderRequestList(immediate = false) {
-  // If immediate is true, render right away (for user interactions)
-  // Otherwise, debounce to avoid constant re-renders during rapid request additions
-  if (immediate) {
-    // Clear any pending debounced render
-    if (renderListTimeout) {
-      clearTimeout(renderListTimeout);
-      renderListTimeout = null;
-    }
-    _doRenderRequestList();
-  } else {
-    // Debounce: clear existing timeout and set a new one
-    if (renderListTimeout) {
-      clearTimeout(renderListTimeout);
-    }
-    renderListTimeout = setTimeout(() => {
-      _doRenderRequestList();
-      renderListTimeout = null;
-    }, 50); // 50ms debounce - fast enough to feel instant, slow enough to batch updates
-  }
-}
-
-function _doRenderRequestList() {
+function renderRequestList() {
   const requestListEl = document.getElementById('requestList');
   if (!requestListEl) {
     console.error('Request list element not found');
@@ -1352,8 +1131,128 @@ function createRequestItem(request) {
   item.appendChild(size);
   item.appendChild(resizeHandle5);
 
-  // Note: Click and double-click handlers are now handled via event delegation
-  // in setupEventListeners() for better reliability when items are re-rendered
+  // Shared timeout for click/double-click handling
+  let clickTimeout = null;
+  
+  // Double-click to open URL in new tab
+  item.addEventListener('dblclick', (e) => {
+    // Don't trigger if clicking on a resize handle
+    if (e.target.classList.contains('column-resize-handle')) {
+      return;
+    }
+    
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    
+    // Clear any pending single-click timeout
+    if (clickTimeout) {
+      clearTimeout(clickTimeout);
+      clickTimeout = null;
+    }
+    
+    // Get the request URL - ensure it's a valid URL
+    let requestUrl = request.url;
+    if (!requestUrl) {
+      console.warn('[Double-click] Cannot open: request has no URL');
+      return;
+    }
+    
+    console.log('[Double-click] Opening URL:', requestUrl);
+    
+    // Ensure URL is absolute (add protocol if missing)
+    try {
+      // Check if URL is relative or missing protocol
+      if (!requestUrl.startsWith('http://') && !requestUrl.startsWith('https://') && 
+          !requestUrl.startsWith('chrome://') && !requestUrl.startsWith('chrome-extension://') &&
+          !requestUrl.startsWith('data:') && !requestUrl.startsWith('blob:')) {
+        // Try to make it absolute by prepending the current page's origin
+        const inspectedUrl = chrome.devtools.inspectedWindow.url || '';
+        if (inspectedUrl) {
+          try {
+            const baseUrl = new URL(inspectedUrl);
+            requestUrl = new URL(requestUrl, baseUrl.origin).href;
+          } catch (urlErr) {
+            console.warn('Cannot resolve relative URL:', requestUrl);
+            return;
+          }
+        } else {
+          console.warn('Cannot resolve relative URL - no base URL available');
+          return;
+        }
+      }
+      
+      // Validate URL format
+      new URL(requestUrl); // Will throw if invalid
+      
+      // Try chrome.tabs.create first (works in DevTools context without tabs permission)
+      if (chrome.tabs && chrome.tabs.create) {
+        chrome.tabs.create({ url: requestUrl }, (createdTab) => {
+          if (chrome.runtime.lastError) {
+            // If chrome.tabs.create fails, fall back to window.open
+            console.log('[Double-click] chrome.tabs.create failed, using window.open:', chrome.runtime.lastError.message);
+            const newWindow = window.open(requestUrl, '_blank');
+            if (!newWindow) {
+              console.error('[Double-click] window.open also failed - popup may be blocked');
+            } else {
+              console.log('[Double-click] Successfully opened URL with window.open');
+            }
+          } else {
+            console.log('[Double-click] Successfully opened URL with chrome.tabs.create');
+          }
+        });
+      } else {
+        // Fallback to window.open if chrome.tabs is not available
+        console.log('[Double-click] chrome.tabs not available, using window.open');
+        const newWindow = window.open(requestUrl, '_blank');
+        if (!newWindow) {
+          console.error('[Double-click] window.open failed - popup may be blocked');
+        } else {
+          console.log('[Double-click] Successfully opened URL with window.open');
+        }
+      }
+    } catch (urlErr) {
+      // Fallback to window.open if URL parsing fails
+      console.warn('Error parsing URL, trying window.open:', urlErr);
+      try {
+        window.open(requestUrl, '_blank');
+      } catch (fallbackErr) {
+        console.error('Error opening URL in new tab:', fallbackErr);
+      }
+    }
+  });
+
+  // Use capture phase to ensure click is caught
+  // Add a small delay to distinguish between single and double clicks
+  item.addEventListener('click', (e) => {
+    // Don't trigger if clicking on a resize handle
+    if (e.target.classList.contains('column-resize-handle')) {
+      return;
+    }
+    
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    
+    // Clear any existing timeout
+    if (clickTimeout) {
+      clearTimeout(clickTimeout);
+    }
+    
+    // Delay single-click action to allow double-click to fire first
+    clickTimeout = setTimeout(() => {
+      console.log('Request clicked:', request.requestId, request.url);
+      
+      selectedRequestId = request.requestId;
+      showRequestDetails(request.requestId);
+      renderRequestList(); // Re-render to update selection
+      
+      clickTimeout = null;
+    }, 200); // 200ms delay to allow double-click
+  }, true);
+  
+  // Note: Removed mousedown handler to allow double-click to work properly
+  // The click handler with timeout handles single-click selection
   
   // Also allow clicking on child elements (URL, status, etc.)
   item.style.cursor = 'pointer';
@@ -1367,7 +1266,7 @@ function createRequestItem(request) {
       e.preventDefault();
       selectedRequestId = request.requestId;
       showRequestDetails(request.requestId);
-      renderRequestList(true); // Immediate render for user interaction
+      renderRequestList();
     }
   });
 
@@ -1458,7 +1357,6 @@ function showRequestDetails(requestId) {
     return;
   }
   
-  // Show panel immediately for instant feedback
   detailsPanel.classList.remove('hidden');
   resizeHandle.classList.add('visible');
   
@@ -1479,37 +1377,23 @@ function showRequestDetails(requestId) {
   }
   clearHighlights();
 
-  // Populate lightweight sections immediately (general info, headers)
+  // Populate general info
   populateGeneralInfo(request);
+  
+  // Populate headers
   populateHeaders(request);
   
-  // Show loading placeholders for heavy sections
-  const payloadContent = document.getElementById('payloadContent');
-  const responseContent = document.getElementById('responseContent');
-  if (payloadContent) {
-    payloadContent.innerHTML = '<div class="loading-data">⏳ Loading...</div>';
-  }
-  if (responseContent) {
-    responseContent.innerHTML = '<div class="loading-data">⏳ Loading...</div>';
-  }
+  // Populate payload
+  populatePayload(request);
   
-  // Restore last active tab preference immediately
+  // Populate response
+  populateResponse(request);
+  
+  // Restore last active tab preference
   const savedTab = localStorage.getItem('networkInspectorActiveTab');
   if (savedTab) {
     switchTab(savedTab);
   }
-  
-  // Defer heavy population work to next frame to keep UI responsive
-  requestAnimationFrame(() => {
-    // Use setTimeout to allow browser to paint the panel first
-    setTimeout(() => {
-      // Populate payload (can be heavy with JSON parsing, tree views)
-      populatePayload(request);
-      
-      // Populate response (can be heavy with JSON parsing, base64 decoding)
-      populateResponse(request);
-    }, 0);
-  });
 }
 
 function navigateToAdjacentRequest(direction) {
@@ -1533,7 +1417,7 @@ function navigateToAdjacentRequest(direction) {
     if (filteredRequests.length > 0) {
       selectedRequestId = filteredRequests[0].requestId;
       showRequestDetails(selectedRequestId);
-      renderRequestList(true); // Immediate render for user interaction
+      renderRequestList();
       scrollToSelectedRequest();
     }
     return;
@@ -1555,7 +1439,7 @@ function navigateToAdjacentRequest(direction) {
   }
   
   showRequestDetails(selectedRequestId);
-  renderRequestList(true); // Immediate render for user interaction
+  renderRequestList();
   scrollToSelectedRequest();
 }
 

@@ -8,7 +8,7 @@ Write-Host "Packaging Network Debugger Plus for Chrome Web Store..." -Foreground
 # Get the script directory
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $extensionName = "network-debugger-plus"
-$zipFileName = "$extensionName-v1.0.0.zip"
+$zipFileName = "$extensionName-v1.0.1.zip"
 $tempDir = Join-Path $scriptDir "temp-package"
 
 # Clean up temp directory if it exists
@@ -74,6 +74,44 @@ if (Test-Path $duplicateManifest) {
     Write-Host "  ✓ Removed duplicate manifest.json" -ForegroundColor Green
 }
 
+# Verify manifest.json permissions
+Write-Host "`nVerifying manifest.json permissions..." -ForegroundColor Cyan
+$manifestPath = Join-Path $tempDir "manifest.json"
+if (Test-Path $manifestPath) {
+    $manifestContent = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    $permissions = $manifestContent.permissions
+    $hasDebugger = $permissions -contains "debugger"
+    $hasWebRequest = $permissions -contains "webRequest"
+    $hasActiveTab = $permissions -contains "activeTab"
+    $hasTabs = $permissions -contains "tabs"
+    $hasHostPermissions = $manifestContent.PSObject.Properties.Name -contains "host_permissions"
+    
+    if ($hasDebugger -and -not $hasWebRequest -and -not $hasActiveTab -and -not $hasTabs -and -not $hasHostPermissions) {
+        Write-Host "  ✓ Permissions are correct (only 'debugger')" -ForegroundColor Green
+    } else {
+        Write-Host "  ✗ WARNING: Permissions may be incorrect!" -ForegroundColor Red
+        if (-not $hasDebugger) { Write-Host "    - Missing 'debugger' permission" -ForegroundColor Red }
+        if ($hasWebRequest) { Write-Host "    - Should not have 'webRequest' permission" -ForegroundColor Yellow }
+        if ($hasActiveTab) { Write-Host "    - Should not have 'activeTab' permission" -ForegroundColor Yellow }
+        if ($hasTabs) { Write-Host "    - Should not have 'tabs' permission" -ForegroundColor Yellow }
+        if ($hasHostPermissions) { Write-Host "    - Should not have 'host_permissions'" -ForegroundColor Yellow }
+    }
+} else {
+    Write-Host "  ✗ manifest.json not found!" -ForegroundColor Red
+}
+
+# Count manifest.json files (should be exactly 1)
+$manifestCount = (Get-ChildItem -Path $tempDir -Recurse -Filter "manifest.json").Count
+if ($manifestCount -eq 1) {
+    Write-Host "  ✓ Found exactly 1 manifest.json (correct)" -ForegroundColor Green
+} else {
+    Write-Host "  ✗ Found $manifestCount manifest.json files (should be 1)" -ForegroundColor Red
+    Write-Host "    Locations:" -ForegroundColor Yellow
+    Get-ChildItem -Path $tempDir -Recurse -Filter "manifest.json" | ForEach-Object {
+        Write-Host "      - $($_.FullName.Replace($tempDir, '.'))" -ForegroundColor Yellow
+    }
+}
+
 # Remove old zip if exists
 if (Test-Path $zipFileName) {
     Write-Host "`nRemoving old ZIP file..." -ForegroundColor Yellow
@@ -97,10 +135,9 @@ $zipSize = (Get-Item $zipPath).Length / 1KB
 Write-Host "`n✓ Package created successfully!" -ForegroundColor Green
 Write-Host "  File: $zipFileName" -ForegroundColor Cyan
 Write-Host "  Size: $([math]::Round($zipSize, 2)) KB" -ForegroundColor Cyan
-Write-Host "`nNext steps:" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "  1. Go to: https://chrome.google.com/webstore/devconsole/" -ForegroundColor White
 Write-Host "  2. Click 'Add new item'" -ForegroundColor White
 Write-Host "  3. Upload: $zipFileName" -ForegroundColor White
-Write-Host "`nPress any key to exit..."
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 
