@@ -7,6 +7,7 @@ class JsonTreeView {
   constructor(data, container) {
     this.data = data;
     this.container = container;
+    this.basePath = 'json-tree-collapsed'; // Base key for localStorage
   }
 
   render() {
@@ -17,11 +18,25 @@ class JsonTreeView {
       return;
     }
 
-    const treeElement = this.createTree(this.data, true);
+    const treeElement = this.createTree(this.data, true, '');
     this.container.appendChild(treeElement);
   }
 
-  createTree(data, isRoot = false) {
+  getCollapsedState(path) {
+    const key = `${this.basePath}-${path}`;
+    return localStorage.getItem(key) === 'true';
+  }
+
+  setCollapsedState(path, collapsed) {
+    const key = `${this.basePath}-${path}`;
+    if (collapsed) {
+      localStorage.setItem(key, 'true');
+    } else {
+      localStorage.removeItem(key);
+    }
+  }
+
+  createTree(data, isRoot = false, path = '') {
     const container = document.createElement('span');
     container.className = isRoot ? 'json-tree json-tree-root' : 'json-tree';
 
@@ -51,12 +66,12 @@ class JsonTreeView {
     }
 
     if (Array.isArray(data)) {
-      container.appendChild(this.createArrayTree(data));
+      container.appendChild(this.createArrayTree(data, path));
       return container;
     }
 
     if (typeof data === 'object') {
-      container.appendChild(this.createObjectTree(data));
+      container.appendChild(this.createObjectTree(data, path));
       return container;
     }
 
@@ -64,7 +79,7 @@ class JsonTreeView {
     return container;
   }
 
-  createObjectTree(obj) {
+  createObjectTree(obj, path = '') {
     const container = document.createElement('span');
     container.style.display = 'inline-block';
     const keys = Object.keys(obj);
@@ -77,9 +92,15 @@ class JsonTreeView {
     const wrapper = document.createElement('span');
     wrapper.style.display = 'inline';
     
+    // Check if this element should be collapsed
+    const isCollapsed = this.getCollapsedState(path);
+    if (isCollapsed) {
+      wrapper.classList.add('json-tree-collapsed');
+    }
+    
     const toggle = document.createElement('span');
     toggle.className = 'json-tree-toggle';
-    toggle.textContent = '▼';
+    toggle.textContent = isCollapsed ? '▶' : '▼';
     
     const openBracket = document.createElement('span');
     openBracket.className = 'json-bracket';
@@ -89,11 +110,16 @@ class JsonTreeView {
     wrapper.appendChild(toggle);
     wrapper.appendChild(openBracket);
     
-    toggle.onclick = (e) => {
+    toggle.addEventListener('click', (e) => {
+      e.preventDefault();
       e.stopPropagation();
+      const wasCollapsed = wrapper.classList.contains('json-tree-collapsed');
       wrapper.classList.toggle('json-tree-collapsed');
-      toggle.textContent = wrapper.classList.contains('json-tree-collapsed') ? '▶' : '▼';
-    };
+      const isNowCollapsed = wrapper.classList.contains('json-tree-collapsed');
+      toggle.textContent = isNowCollapsed ? '▶' : '▼';
+      // Save state to localStorage
+      this.setCollapsedState(path, isNowCollapsed);
+    });
 
     const children = document.createElement('div');
     children.className = 'json-tree-children json-tree-node';
@@ -110,7 +136,9 @@ class JsonTreeView {
       const colonSpan = document.createElement('span');
       colonSpan.className = 'json-colon';
       
-      const valueTree = this.createTree(obj[key]);
+      // Build path for nested elements
+      const childPath = path ? `${path}.${key}` : key;
+      const valueTree = this.createTree(obj[key], false, childPath);
       
       // Check if value is an object or array - make it block-level
       const isComplexValue = (typeof obj[key] === 'object' && obj[key] !== null && !Array.isArray(obj[key]) && Object.keys(obj[key]).length > 0) ||
@@ -153,7 +181,7 @@ class JsonTreeView {
     return container;
   }
 
-  createArrayTree(arr) {
+  createArrayTree(arr, path = '') {
     const container = document.createElement('span');
     container.style.display = 'inline-block';
     
@@ -164,14 +192,26 @@ class JsonTreeView {
 
     const wrapper = document.createElement('span');
     wrapper.style.display = 'inline-block';
+    
+    // Check if this element should be collapsed
+    const isCollapsed = this.getCollapsedState(path);
+    if (isCollapsed) {
+      wrapper.classList.add('json-tree-collapsed');
+    }
+    
     const toggle = document.createElement('span');
     toggle.className = 'json-tree-toggle';
-    toggle.textContent = '▼';
-    toggle.onclick = (e) => {
+    toggle.textContent = isCollapsed ? '▶' : '▼';
+    toggle.addEventListener('click', (e) => {
+      e.preventDefault();
       e.stopPropagation();
+      const wasCollapsed = wrapper.classList.contains('json-tree-collapsed');
       wrapper.classList.toggle('json-tree-collapsed');
-      toggle.textContent = wrapper.classList.contains('json-tree-collapsed') ? '▶' : '▼';
-    };
+      const isNowCollapsed = wrapper.classList.contains('json-tree-collapsed');
+      toggle.textContent = isNowCollapsed ? '▶' : '▼';
+      // Save state to localStorage
+      this.setCollapsedState(path, isNowCollapsed);
+    });
 
     wrapper.appendChild(toggle);
     const openBracket = document.createElement('span');
@@ -186,7 +226,9 @@ class JsonTreeView {
       const row = document.createElement('div');
       row.className = 'json-tree-row';
       
-      const valueTree = this.createTree(item);
+      // Build path for array items
+      const childPath = path ? `${path}[${index}]` : `[${index}]`;
+      const valueTree = this.createTree(item, false, childPath);
       
       // Check if array item is complex (object/array)
       const isComplexItem = (typeof item === 'object' && item !== null && !Array.isArray(item) && Object.keys(item).length > 0) ||

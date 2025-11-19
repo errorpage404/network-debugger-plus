@@ -73,24 +73,13 @@
 
       <!-- Request Details -->
       <div id="requestDetails" class="request-details hidden">
-        <div class="details-header">
-          <h3>Request Details</h3>
-          <div class="details-search-container">
-            <input 
-              type="text" 
-              id="detailsSearchInput" 
-              placeholder="Search in details..."
-              class="details-search-input"
-            />
-            <button id="detailsSearchClear" class="details-search-clear" title="Clear search">✕</button>
-          </div>
-          <button id="closeDetailsBtn" class="btn-close">✕</button>
-        </div>
-        
         <div class="details-tabs">
-          <button class="tab-btn active" data-tab="headers">Headers</button>
-          <button class="tab-btn" data-tab="payload">Payload</button>
-          <button class="tab-btn" data-tab="response">Response</button>
+          <button id="closeDetailsBtn" class="btn-close">✕</button>
+          <div class="details-tabs-buttons">
+            <button class="tab-btn active" data-tab="headers">Headers</button>
+            <button class="tab-btn" data-tab="payload">Payload</button>
+            <button class="tab-btn" data-tab="response">Response</button>
+          </div>
         </div>
 
         <div class="details-content">

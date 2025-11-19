@@ -1478,6 +1478,12 @@ function showRequestDetails(requestId) {
     detailsSearchClear.classList.remove('visible');
   }
   clearHighlights();
+  
+  // Hide form data title container when showing new request (will be shown when form data is rendered)
+  const formDataTitleContainer = document.querySelector('.form-data-title-container');
+  if (formDataTitleContainer) {
+    formDataTitleContainer.style.display = 'none';
+  }
 
   // Populate lightweight sections immediately (general info, headers)
   populateGeneralInfo(request);
@@ -1801,48 +1807,238 @@ function parseFormData(data) {
   }
 }
 
+function setupDetailsSearch(searchInput, searchClear, container) {
+  // Show/hide clear button based on input value
+  const updateClearButton = () => {
+    if (searchClear) {
+      if (searchInput.value.trim()) {
+        searchClear.classList.add('visible');
+      } else {
+        searchClear.classList.remove('visible');
+      }
+    }
+  };
+  
+  searchInput.addEventListener('input', (e) => {
+    const searchTerm = e.target.value.trim();
+    updateClearButton();
+    if (searchTerm) {
+      // Search within the container (form data table)
+      highlightTextInContainer(container, searchTerm);
+    } else {
+      clearHighlightsInContainer(container);
+    }
+  });
+  
+  // Clear button click handler
+  if (searchClear) {
+    searchClear.addEventListener('click', () => {
+      searchInput.value = '';
+      searchClear.classList.remove('visible');
+      clearHighlightsInContainer(container);
+      searchInput.focus();
+    });
+  }
+  
+  // Initial state
+  updateClearButton();
+}
+
+function highlightTextInContainer(container, searchTerm) {
+  if (!searchTerm || !container) return;
+  
+  clearHighlightsInContainer(container);
+  
+  // Find all text nodes within the container
+  const walker = document.createTreeWalker(
+    container,
+    NodeFilter.SHOW_TEXT,
+    null,
+    false
+  );
+  
+  const textNodes = [];
+  let node;
+  while (node = walker.nextNode()) {
+    // Skip text nodes inside script, style, or highlight-match elements
+    let parent = node.parentElement;
+    while (parent) {
+      if (parent.tagName === 'SCRIPT' || 
+          parent.tagName === 'STYLE' || 
+          parent.classList.contains('highlight-match')) {
+        break;
+      }
+      parent = parent.parentElement;
+    }
+    if (!parent && node.textContent.trim()) {
+      textNodes.push(node);
+    }
+  }
+  
+  // Highlight matches in each text node
+  textNodes.forEach(textNode => {
+    const text = textNode.textContent;
+    const regex = new RegExp(`(${escapeRegex(searchTerm)})`, 'gi');
+    
+    if (regex.test(text)) {
+      const highlightedText = text.replace(regex, '<span class="highlight-match">$1</span>');
+      
+      // Only replace if there's actually a match
+      if (highlightedText !== text) {
+        const wrapper = document.createElement('span');
+        wrapper.innerHTML = highlightedText;
+        
+        // Replace the text node with the highlighted version
+        textNode.parentNode.replaceChild(wrapper, textNode);
+      }
+    }
+  });
+}
+
+function clearHighlightsInContainer(container) {
+  if (!container) return;
+  
+  // Find all highlight spans within the container and unwrap them
+  const highlights = container.querySelectorAll('.highlight-match');
+  highlights.forEach(highlight => {
+    const parent = highlight.parentNode;
+    if (parent) {
+      parent.replaceChild(document.createTextNode(highlight.textContent), highlight);
+      // Normalize to merge adjacent text nodes
+      parent.normalize();
+    }
+  });
+}
+
 function renderFormData(container, formData, requestUrl, title = 'Form Data') {
-  // Add a title if provided
+  // Set request URL on container for context menu storage
+  if (container && requestUrl) {
+    container.setAttribute('data-request-url', requestUrl);
+  }
+  
+  // Add a title with search field attached to tabs header if provided
   if (title) {
-    const titleEl = document.createElement('h4');
-    titleEl.style.marginTop = '0';
-    titleEl.style.marginBottom = '10px';
-    titleEl.textContent = title;
-    container.appendChild(titleEl);
+    // Check if title container already exists, if not create it
+    let titleContainer = document.querySelector('.form-data-title-container');
+    if (!titleContainer) {
+      const detailsTabs = document.querySelector('.details-tabs');
+      if (detailsTabs) {
+        titleContainer = document.createElement('div');
+        titleContainer.className = 'form-data-title-container';
+        
+        // Wrap title and search in a row container
+        const titleRow = document.createElement('div');
+        titleRow.style.display = 'flex';
+        titleRow.style.justifyContent = 'flex-start';
+        titleRow.style.alignItems = 'center';
+        titleRow.style.padding = '8px 16px';
+        titleRow.style.gap = '8px';
+        titleRow.style.minHeight = '28px';
+        titleRow.style.position = 'relative';
+        
+        const titleEl = document.createElement('h4');
+        titleEl.style.margin = '0';
+        titleEl.style.flexShrink = '0';
+        titleEl.textContent = title;
+        titleRow.appendChild(titleEl);
+        
+        const searchContainer = document.createElement('div');
+        searchContainer.className = 'details-search-container';
+        searchContainer.style.position = 'absolute';
+        searchContainer.style.left = '50%';
+        searchContainer.style.top = '50%';
+        searchContainer.style.transform = 'translate(-50%, -50%)';
+        searchContainer.style.maxWidth = '250px';
+        searchContainer.style.zIndex = '1';
+        
+        const searchInput = document.createElement('input');
+        searchInput.type = 'text';
+        searchInput.id = `detailsSearchInput-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        searchInput.placeholder = 'Search details below...';
+        searchInput.className = 'details-search-input';
+        
+        const searchClear = document.createElement('button');
+        searchClear.className = 'details-search-clear';
+        searchClear.title = 'Clear search';
+        searchClear.textContent = '✕';
+        
+        searchContainer.appendChild(searchInput);
+        searchContainer.appendChild(searchClear);
+        titleRow.appendChild(searchContainer);
+        titleContainer.appendChild(titleRow);
+        
+        // Insert after details-tabs
+        detailsTabs.parentNode.insertBefore(titleContainer, detailsTabs.nextSibling);
+        
+        // Setup search functionality
+        setupDetailsSearch(searchInput, searchClear, container);
+      }
+    } else {
+      // Update existing title if different
+      const titleEl = titleContainer.querySelector('h4');
+      if (titleEl) {
+        titleEl.textContent = title;
+      }
+    }
+    // Show the title container when form data is rendered
+    if (titleContainer) {
+      titleContainer.style.display = 'flex';
+      
+      // Create header inside title container if it doesn't exist
+      let header = titleContainer.querySelector('.form-data-header');
+      let resizeHandle, resizeHandle2;
+      
+      if (!header) {
+        header = document.createElement('div');
+        header.className = 'form-data-header';
+        
+        const keyHeader = document.createElement('span');
+        keyHeader.className = 'form-key-header';
+        keyHeader.textContent = 'Key';
+        header.appendChild(keyHeader);
+        
+        // Resize handle
+        resizeHandle = document.createElement('div');
+        resizeHandle.className = 'form-column-resize-handle';
+        header.appendChild(resizeHandle);
+        
+        const highlightHeader = document.createElement('span');
+        highlightHeader.className = 'form-highlight-header';
+        highlightHeader.textContent = 'Highlight';
+        header.appendChild(highlightHeader);
+        
+        // Resize handle between highlight and value
+        resizeHandle2 = document.createElement('div');
+        resizeHandle2.className = 'form-column-resize-handle';
+        header.appendChild(resizeHandle2);
+        
+        const valueHeader = document.createElement('span');
+        valueHeader.className = 'form-value-header';
+        valueHeader.textContent = 'Value';
+        header.appendChild(valueHeader);
+        
+        titleContainer.appendChild(header);
+      } else {
+        // Get existing resize handles
+        resizeHandle = header.querySelector('.form-column-resize-handle');
+        resizeHandle2 = header.querySelectorAll('.form-column-resize-handle')[1];
+      }
+      
+      // Setup resize handlers for form data columns
+      if (resizeHandle && header) {
+        setupFormColumnResize(resizeHandle, header);
+      }
+      if (resizeHandle2 && header) {
+        setupHighlightColumnResize(resizeHandle2, header);
+      }
+      
+      // Setup context menu for key visibility
+      setupFormDataHeaderContextMenu(header, formData, container);
+    }
   }
   
   const table = document.createElement('div');
   table.className = 'form-data-table';
-  
-  const header = document.createElement('div');
-  header.className = 'form-data-header';
-  
-  const keyHeader = document.createElement('span');
-  keyHeader.className = 'form-key-header';
-  keyHeader.textContent = 'Key';
-  header.appendChild(keyHeader);
-  
-  // Resize handle
-  const resizeHandle = document.createElement('div');
-  resizeHandle.className = 'form-column-resize-handle';
-  header.appendChild(resizeHandle);
-  
-  const highlightHeader = document.createElement('span');
-  highlightHeader.className = 'form-highlight-header';
-  highlightHeader.textContent = 'Highlight';
-  header.appendChild(highlightHeader);
-  
-  // Resize handle between highlight and value
-  const resizeHandle2 = document.createElement('div');
-  resizeHandle2.className = 'form-column-resize-handle';
-  header.appendChild(resizeHandle2);
-  
-  const valueHeader = document.createElement('span');
-  valueHeader.className = 'form-value-header';
-  valueHeader.textContent = 'Value';
-  header.appendChild(valueHeader);
-  
-  table.appendChild(header);
   
   // Restore saved column widths
   const savedKeyWidth = localStorage.getItem('networkInspectorFormKeyWidth');
@@ -1856,9 +2052,27 @@ function renderFormData(container, formData, requestUrl, title = 'Form Data') {
     document.documentElement.style.setProperty('--form-highlight-width', savedHighlightWidth);
   }
   
+  // Get visible keys for filtering
+  const requestUrlForStorage = requestUrl || '';
+  const storageKey = `networkInspectorVisibleKeys_${requestUrlForStorage}`;
+  let visibleKeys = new Set(Object.keys(formData));
+  try {
+    const saved = localStorage.getItem(storageKey);
+    if (saved) {
+      visibleKeys = new Set(JSON.parse(saved));
+    }
+  } catch (e) {
+    // Use all keys if error loading
+  }
+  
   Object.entries(formData).forEach(([key, value]) => {
     const row = document.createElement('div');
     row.className = 'form-data-row';
+    
+    // Hide row if key is not visible
+    if (!visibleKeys.has(key)) {
+      row.style.display = 'none';
+    }
     
     const keyCell = document.createElement('div');
     keyCell.className = 'form-data-key';
@@ -1927,10 +2141,6 @@ function renderFormData(container, formData, requestUrl, title = 'Form Data') {
   });
   
   container.appendChild(table);
-  
-  // Setup resize handlers for form data columns
-  setupFormColumnResize(resizeHandle, header);
-  setupHighlightColumnResize(resizeHandle2, header);
 }
 
 function getHighlightStorageKey(requestUrl, formKey) {
@@ -2007,6 +2217,12 @@ function populateResponse(request) {
 }
 
 function switchTab(tabName) {
+  // Show/hide form data title container based on active tab
+  const formDataTitleContainer = document.querySelector('.form-data-title-container');
+  if (formDataTitleContainer) {
+    // Only show for payload tab, hide for headers and response
+    formDataTitleContainer.style.display = tabName === 'payload' ? 'flex' : 'none';
+  }
   // Update tab buttons
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.classList.remove('active');
@@ -2116,9 +2332,9 @@ function setupResizeHandle() {
         const delta = startX - e.clientX;
         const newWidth = startWidth + delta;
         
-        // Constrain width between 300px and 80% of container
-        const minWidth = 300;
-        const maxWidth = containerWidth * 0.8;
+        // Constrain width between 200px (minimum) and 95% of container (allow dragging left as far as possible)
+        const minWidth = 200;
+        const maxWidth = containerWidth * 0.95;
         
         if (newWidth >= minWidth && newWidth <= maxWidth && currentDetailsPanel && currentDetailsPanel.style) {
           currentDetailsPanel.style.width = newWidth + 'px';
@@ -2229,8 +2445,8 @@ function setupFormColumnResize(resizeHandle, header) {
     const deltaPercent = (delta / headerWidth) * 100;
     const newKeyWidth = startKeyWidth + deltaPercent;
     
-    // Constrain between 10% and 70% (allow highlight to sit closer to key)
-    const minWidth = 10;
+    // Constrain between 1% (minimum - allow key column to get as small as possible) and 70%
+    const minWidth = 1;
     const maxWidth = 70;
     
     if (newKeyWidth >= minWidth && newKeyWidth <= maxWidth) {
@@ -2280,9 +2496,16 @@ function setupHighlightColumnResize(resizeHandle, header) {
     const delta = e.clientX - startHighlightX;
     const newWidth = startHighlightWidth + delta;
     
-    // Constrain between 20px and 150px (reduced min for closer to key)
-    const minWidth = 20;
-    const maxWidth = 150;
+    // Calculate max width based on container (allow dragging left as far as possible)
+    // Get the form data table container width from the resize handle, header, or title container
+    const formTable = resizeHandle?.closest('.form-data-table') || 
+                      header?.closest('.form-data-table') ||
+                      header?.closest('.form-data-title-container');
+    const containerWidth = formTable ? formTable.offsetWidth : 800; // Fallback to 800px if can't determine
+    const maxWidth = Math.max(500, containerWidth * 0.6); // At least 500px, or 60% of container
+    
+    // Constrain between 10px (minimum - allow dragging left as close as possible to key column) and calculated max width
+    const minWidth = 10;
     
     if (newWidth >= minWidth && newWidth <= maxWidth) {
       document.documentElement.style.setProperty('--form-highlight-width', `${newWidth}px`);
@@ -2300,6 +2523,185 @@ function setupHighlightColumnResize(resizeHandle, header) {
       const currentWidth = getComputedStyle(document.documentElement).getPropertyValue('--form-highlight-width');
       if (currentWidth) {
         localStorage.setItem('networkInspectorFormHighlightWidth', currentWidth);
+      }
+    }
+  });
+}
+
+function setupFormDataHeaderContextMenu(header, formData, container) {
+  // Get request URL for storage key
+  const requestUrl = container.getAttribute('data-request-url') || '';
+  const storageKey = `networkInspectorVisibleKeys_${requestUrl}`;
+  
+  // Load visible keys from localStorage (default: all keys visible)
+  let visibleKeys = new Set(Object.keys(formData));
+  try {
+    const saved = localStorage.getItem(storageKey);
+    if (saved) {
+      visibleKeys = new Set(JSON.parse(saved));
+    }
+  } catch (e) {
+    console.warn('Error loading visible keys:', e);
+  }
+  
+  // Create context menu element
+  let contextMenu = null;
+  
+  header.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Remove existing context menu if any
+    if (contextMenu) {
+      contextMenu.remove();
+    }
+    
+    // Create context menu
+    contextMenu = document.createElement('div');
+    contextMenu.className = 'form-data-context-menu';
+    contextMenu.style.position = 'fixed';
+    contextMenu.style.left = `${e.clientX}px`;
+    contextMenu.style.top = `${e.clientY}px`;
+    contextMenu.style.zIndex = '10000';
+    
+    // Create Select All / Deselect All toggle button
+    const toggleAllItem = document.createElement('div');
+    toggleAllItem.className = 'form-data-context-menu-toggle-all';
+    const toggleAllButton = document.createElement('button');
+    toggleAllButton.className = 'form-data-context-menu-toggle-btn';
+    toggleAllButton.type = 'button';
+    
+    const allKeys = Object.keys(formData);
+    const allSelected = allKeys.every(key => visibleKeys.has(key));
+    toggleAllButton.textContent = allSelected ? 'Deselect All' : 'Select All';
+    
+    toggleAllButton.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      // Recalculate current state dynamically
+      const currentlyAllSelected = allKeys.every(key => visibleKeys.has(key));
+      
+      if (currentlyAllSelected) {
+        // Deselect all
+        visibleKeys.clear();
+        toggleAllButton.textContent = 'Select All';
+      } else {
+        // Select all
+        allKeys.forEach(key => visibleKeys.add(key));
+        toggleAllButton.textContent = 'Deselect All';
+      }
+      
+      // Update all checkboxes
+      const checkboxes = contextMenu.querySelectorAll('input[type="checkbox"]');
+      checkboxes.forEach(checkbox => {
+        checkbox.checked = !currentlyAllSelected;
+      });
+      
+      // Save to localStorage
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(Array.from(visibleKeys)));
+      } catch (err) {
+        console.warn('Error saving visible keys:', err);
+      }
+      
+      // Filter rows
+      filterFormDataRows(container, visibleKeys);
+    });
+    
+    toggleAllItem.appendChild(toggleAllButton);
+    contextMenu.appendChild(toggleAllItem);
+    
+    // Add separator
+    const separator = document.createElement('div');
+    separator.className = 'form-data-context-menu-separator';
+    contextMenu.appendChild(separator);
+    
+    // Create menu items for each key
+    const keys = Object.keys(formData).sort();
+    keys.forEach(key => {
+      const menuItem = document.createElement('div');
+      menuItem.className = 'form-data-context-menu-item';
+      
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = visibleKeys.has(key);
+      checkbox.id = `key-checkbox-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${key.replace(/[^a-zA-Z0-9]/g, '-')}`;
+      
+      const label = document.createElement('label');
+      label.htmlFor = checkbox.id;
+      label.textContent = key;
+      label.className = 'form-data-context-menu-label';
+      
+      checkbox.addEventListener('change', (e) => {
+        if (e.target.checked) {
+          visibleKeys.add(key);
+        } else {
+          visibleKeys.delete(key);
+        }
+        
+        // Update toggle all button text
+        const allKeys = Object.keys(formData);
+        const allSelected = allKeys.every(k => visibleKeys.has(k));
+        const toggleBtn = contextMenu.querySelector('.form-data-context-menu-toggle-btn');
+        if (toggleBtn) {
+          toggleBtn.textContent = allSelected ? 'Deselect All' : 'Select All';
+        }
+        
+        // Save to localStorage
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(Array.from(visibleKeys)));
+        } catch (err) {
+          console.warn('Error saving visible keys:', err);
+        }
+        
+        // Filter rows
+        filterFormDataRows(container, visibleKeys);
+      });
+      
+      menuItem.appendChild(checkbox);
+      menuItem.appendChild(label);
+      contextMenu.appendChild(menuItem);
+    });
+    
+    document.body.appendChild(contextMenu);
+    
+    // Close menu when clicking outside
+    const closeMenu = (e) => {
+      if (contextMenu && !contextMenu.contains(e.target) && e.target !== header) {
+        if (contextMenu) {
+          contextMenu.remove();
+          contextMenu = null;
+        }
+        document.removeEventListener('click', closeMenu);
+        document.removeEventListener('contextmenu', closeMenu);
+      }
+    };
+    
+    // Use setTimeout to avoid immediate close
+    setTimeout(() => {
+      document.addEventListener('click', closeMenu);
+      document.addEventListener('contextmenu', closeMenu);
+    }, 100);
+  });
+  
+  // Apply initial filter
+  filterFormDataRows(container, visibleKeys);
+}
+
+function filterFormDataRows(container, visibleKeys) {
+  const table = container.querySelector('.form-data-table');
+  if (!table) return;
+  
+  const rows = table.querySelectorAll('.form-data-row');
+  rows.forEach(row => {
+    const keyCell = row.querySelector('.form-data-key');
+    if (keyCell) {
+      const key = keyCell.textContent.trim();
+      if (visibleKeys.has(key)) {
+        row.style.display = 'flex';
+      } else {
+        row.style.display = 'none';
       }
     }
   });
