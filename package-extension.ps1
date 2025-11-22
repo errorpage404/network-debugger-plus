@@ -8,7 +8,7 @@ Write-Host "Packaging Network Debugger Plus for Chrome Web Store..." -Foreground
 # Get the script directory
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $extensionName = "network-debugger-plus"
-$zipFileName = "$extensionName-v1.0.2.zip"
+$zipFileName = "$extensionName-v1.0.3.zip"
 $tempDir = Join-Path $scriptDir "temp-package"
 
 # Clean up temp directory if it exists

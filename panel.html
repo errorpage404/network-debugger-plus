@@ -29,19 +29,24 @@
           class="filter-input"
         />
       </div>
-      <div class="filter-buttons">
-        <button class="filter-btn active" data-filter="all">All</button>
-        <button class="filter-btn" data-filter="fetch">Fetch/XHR</button>
-        <button class="filter-btn" data-filter="doc">Doc</button>
-        <button class="filter-btn" data-filter="css">CSS</button>
-        <button class="filter-btn" data-filter="js">JS</button>
-        <button class="filter-btn" data-filter="font">Font</button>
-        <button class="filter-btn" data-filter="img">Img</button>
-        <button class="filter-btn" data-filter="media">Media</button>
-        <button class="filter-btn" data-filter="manifest">Manifest</button>
-        <button class="filter-btn" data-filter="socket">Socket</button>
-        <button class="filter-btn" data-filter="wasm">Wasm</button>
-        <button class="filter-btn" data-filter="other">Other</button>
+      <div class="filter-controls-right">
+        <button id="clearOnReloadBtn" class="btn btn-secondary clear-on-reload-btn active" title="Clear requests when page reloads/navigates">
+          <span class="check-icon">✓</span> Clear Requests on Reload
+        </button>
+        <div class="filter-buttons">
+          <button class="filter-btn active" data-filter="all">All</button>
+          <button class="filter-btn" data-filter="fetch">Fetch/XHR</button>
+          <button class="filter-btn" data-filter="doc">Doc</button>
+          <button class="filter-btn" data-filter="css">CSS</button>
+          <button class="filter-btn" data-filter="js">JS</button>
+          <button class="filter-btn" data-filter="font">Font</button>
+          <button class="filter-btn" data-filter="img">Img</button>
+          <button class="filter-btn" data-filter="media">Media</button>
+          <button class="filter-btn" data-filter="manifest">Manifest</button>
+          <button class="filter-btn" data-filter="socket">Socket</button>
+          <button class="filter-btn" data-filter="wasm">Wasm</button>
+          <button class="filter-btn" data-filter="other">Other</button>
+        </div>
       </div>
     </div>
 

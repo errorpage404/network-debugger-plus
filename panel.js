@@ -7,10 +7,12 @@ let requestManager;
 let isRecording = true;
 let selectedRequestId = null;
 let tabId;
+let clearOnReload = true; // Default: clear requests on page navigation/reload
 let isResizing = false;
 let isPanelActive = true;
 let startX = 0;
 let startWidth = 0;
+let startContainerWidth = 0; // Store container width at start of resize
 let isResizingFormColumn = false;
 let startFormX = 0;
 let startKeyWidth = 0;
@@ -25,8 +27,91 @@ let pageStartTime = null; // Time when page navigation started
 let domContentLoadedTime = null; // DOMContentLoaded event time
 let loadTime = null; // Load event time
 let renderListTimeout = null; // Debounce timeout for renderRequestList
+let backgroundPort = null; // Persistent connection to background script
+let useDevToolsNetworkAPI = false; // Flag to use chrome.devtools.network instead of debugger
+
+// Set up persistent port connection to background script
+const setupBackgroundConnection = function() {
+  try {
+    if (!tabId) {
+      console.warn('[Panel] Cannot set up background connection - tabId not set');
+      return;
+    }
+    console.log('[Panel] Setting up persistent connection to background for tab:', tabId);
+    
+    // Connect to background script
+    backgroundPort = chrome.runtime.connect({ name: 'devtools-panel' });
+    
+    // Send initial message with tabId
+    backgroundPort.postMessage({ action: 'panelReady', tabId: tabId });
+    
+    // Listen for messages from background
+    backgroundPort.onMessage.addListener((message) => {
+      if (message.action === 'panelReadyConfirmed') {
+        console.log('[Panel] Background confirmed panel ready via port. Queued messages:', message.queuedCount || 0);
+      } else if (message.action === 'networkEvent') {
+        // Log that we received ANY network event message (first few only)
+        if (!window._panelMessageCount) window._panelMessageCount = 0;
+        window._panelMessageCount++;
+        if (window._panelMessageCount <= 5) {
+          console.log('[Panel] 📨 Received network event message:', message.method, 'tabId:', message.tabId, 'our tabId:', tabId);
+        }
+        
+        if (message.tabId !== tabId) {
+          // Different tab, ignore
+          console.warn('[Panel] ⚠️ Ignoring event from different tab. Expected:', tabId, 'Got:', message.tabId);
+          return;
+        }
+        
+        if (!isRecording) {
+          console.log('[Skipped] Recording is paused, ignoring event:', message.method);
+          return;
+        }
+        
+        // Log that we received the message (only for Fetch/XHR to reduce spam)
+        if (message.method === 'Network.requestWillBeSent') {
+          const type = message.params?.type || 'unknown';
+          const url = message.params?.request?.url || 'unknown';
+          const lowerType = type.toLowerCase();
+          if (lowerType === 'fetch' || lowerType === 'xhr') {
+            console.log('[Panel] ✅ Received', type, 'request:', url.substring(0, 60));
+          }
+          // Also log a count of all Network.requestWillBeSent messages received
+          if (!window._requestCount) window._requestCount = 0;
+          window._requestCount++;
+          if (window._requestCount % 10 === 0 || lowerType === 'fetch' || lowerType === 'xhr') {
+            console.log('[Panel] ✅ Total Network.requestWillBeSent messages received:', window._requestCount);
+          }
+        }
+        
+        // Handle the network event
+        try {
+          handleNetworkEvent(message.method, message.params);
+        } catch (err) {
+          console.error('[Panel] Error handling network event:', err);
+        }
+      }
+    });
+    
+    // Handle connection disconnect
+    backgroundPort.onDisconnect.addListener(() => {
+      console.warn('[Panel] Background connection disconnected, reconnecting...');
+      // Try to reconnect after a short delay
+      setTimeout(() => {
+        if (tabId) {
+          setupBackgroundConnection();
+        }
+      }, 1000);
+    });
+    
+    console.log('[Panel] ✅ Persistent connection to background established');
+  } catch (err) {
+    console.error('[Panel] Error setting up background connection:', err);
+  }
+};
 
 // Set up message listener function - defined as const to ensure it's available
+// This is kept as a fallback for one-off messages
 const setupMessageListener = function() {
   try {
     if (!tabId) {
@@ -40,35 +125,19 @@ const setupMessageListener = function() {
       const willRespondAsync = true;
       
       if (message.action === 'networkEvent') {
+        // This should now come through the port, but keep as fallback
+        console.log('[Panel] 📨 Received network event via onMessage (fallback):', message.method);
+        
         if (message.tabId !== tabId) {
-          // Different tab, ignore
           sendResponse({ received: false, reason: 'wrongTab' });
           return willRespondAsync;
         }
         
         if (!isRecording) {
-          console.log('[Skipped] Recording is paused, ignoring event:', message.method);
           sendResponse({ received: false, reason: 'paused' });
           return willRespondAsync;
         }
         
-        // Log that we received the message (only for Fetch/XHR to reduce spam)
-        if (message.method === 'Network.requestWillBeSent') {
-          const type = message.params?.type || 'unknown';
-          const url = message.params?.request?.url || 'unknown';
-          const lowerType = type.toLowerCase();
-          if (lowerType === 'fetch' || lowerType === 'xhr') {
-            console.log('[Panel] Received', type, 'request:', url.substring(0, 60));
-          }
-          // Also log a count of all Network.requestWillBeSent messages received
-          if (!window._requestCount) window._requestCount = 0;
-          window._requestCount++;
-          if (window._requestCount % 10 === 0 || lowerType === 'fetch' || lowerType === 'xhr') {
-            console.log('[Panel] Total Network.requestWillBeSent messages received:', window._requestCount);
-          }
-        }
-        
-        // Handle the network event
         try {
           handleNetworkEvent(message.method, message.params);
           sendResponse({ received: true, processed: true });
@@ -82,7 +151,7 @@ const setupMessageListener = function() {
       
       return willRespondAsync;
     });
-    console.log('[Panel] Message listener set up successfully');
+    console.log('[Panel] Message listener set up successfully (fallback)');
   } catch (err) {
     // Ignore errors if extension context is invalidated
     console.error('[Error] Setting up message listener:', err);
@@ -100,33 +169,36 @@ document.addEventListener('DOMContentLoaded', () => {
     
     requestManager = new RequestManager();
     tabId = chrome.devtools.inspectedWindow.tabId;
+    
+    // Check if tabId is valid (important for incognito mode)
+    if (!tabId || tabId === undefined) {
+      console.error('[Panel] ⚠️ CRITICAL: tabId is not available!');
+      console.error('[Panel] This can happen in incognito mode if the extension is not properly enabled.');
+      console.error('[Panel] Please check:');
+      console.error('[Panel] 1. Extension is enabled for incognito mode (chrome://extensions → Details → Allow in incognito)');
+      console.error('[Panel] 2. Try closing and reopening the incognito window');
+      console.error('[Panel] 3. Try reloading the extension');
+      return;
+    }
+    
+    console.log('[Panel] ✅ tabId obtained:', tabId);
     pageStartTime = Date.now(); // Initialize page start time
     
-    // CRITICAL: Set up message listener FIRST, before anything else
+    // CRITICAL: Set up persistent connection to background FIRST, before anything else
     // This ensures we don't miss any early requests
     // (tabId is now set, so this will work)
-    setupMessageListener();
+    setupBackgroundConnection();
     
-    // Notify background that panel is ready to receive messages
-    // Use sendMessage with callback to see if queue was sent
-    try {
-      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
-        chrome.runtime.sendMessage({ action: 'panelReady', tabId: tabId }, (response) => {
-          if (chrome.runtime.lastError) {
-            console.warn('[Panel] Failed to notify background:', chrome.runtime.lastError.message);
-          } else if (response) {
-            console.log('[Panel] Background confirmed panel ready. Queued messages:', response.queuedCount || 0);
-          }
-        });
-      }
-    } catch (err) {
-      console.warn('[Panel] Error notifying background:', err);
-    }
+    // Also set up fallback message listener for one-off messages
+    setupMessageListener();
     
     initializeUI();
     setupEventListeners();
     
-    // Attach debugger immediately - this is critical for capturing early requests
+    // Use chrome.debugger API (this is the standard, reliable approach)
+    // Note: chrome.devtools.network API is not available in standard Chrome extensions
+    console.log('[Panel] Using chrome.debugger API to capture network requests...');
+    useDevToolsNetworkAPI = false;
     attachDebugger();
     
     // Also try to attach after a short delay in case the first attempt fails
@@ -157,8 +229,12 @@ document.addEventListener('DOMContentLoaded', () => {
                const redirects = window._redirectCount || 0;
                const noUrl = window._noUrlRequests || 0;
                const notAdded = window._notAddedCount || 0;
+               const messagesReceived = window._requestCount || 0;
+               const panelMessages = window._panelMessageCount || 0;
+               
                console.log('[Panel] Summary - Total requests:', count, 'Fetch/XHR:', fetchXhrCount, 
-                         '| Messages received:', window._requestCount || 0,
+                         '| Network.requestWillBeSent messages received:', messagesReceived,
+                         '| Total panel messages received:', panelMessages,
                          '| Frame requests:', window._frameRequestCount || 0,
                          '| Total captured (before filter):', totalCaptured,
                          '| Skipped (own extension):', skippedOwn,
@@ -167,6 +243,17 @@ document.addEventListener('DOMContentLoaded', () => {
                          '| Redirects:', redirects,
                          '| No URL requests:', noUrl,
                          '| Not added (duplicates):', notAdded);
+               
+               // Diagnostic warning if no messages received
+               if (messagesReceived === 0 && count === 0 && panelMessages === 0) {
+                 console.warn('[Panel] ⚠️⚠️⚠️ DIAGNOSTIC: No network events received! ⚠️⚠️⚠️');
+                 console.warn('[Panel] Possible causes:');
+                 console.warn('[Panel] 1. Chrome DevTools Network tab is open (CLOSE IT!)');
+                 console.warn('[Panel] 2. Background script not receiving debugger events');
+                 console.warn('[Panel] 3. Check background console: chrome://extensions → Service worker → Inspect');
+                 console.warn('[Panel] 4. Navigate to a website to trigger network requests');
+               }
+               
                window._lastLogTime = Date.now();
              }
       
@@ -210,6 +297,20 @@ function initializeUI() {
 }
 
 function setupEventListeners() {
+  // Close context menu on any navigation or URL change
+  try {
+    // Listen for URL changes in the inspected window
+    if (typeof chrome !== 'undefined' && chrome.devtools && chrome.devtools.inspectedWindow && chrome.devtools.inspectedWindow.onNavigated) {
+      chrome.devtools.inspectedWindow.onNavigated.addListener((url) => {
+        closeFormDataContextMenu();
+      });
+    } else {
+      console.warn('[Panel] onNavigated listener not available (this is normal in some contexts)');
+    }
+  } catch (err) {
+    console.warn('Error setting up navigation listener:', err);
+  }
+  
   try {
     // Clear button
     const clearBtn = document.getElementById('clearBtn');
@@ -245,11 +346,29 @@ function setupEventListeners() {
       });
     }
 
+    // Clear on reload toggle button
+    const clearOnReloadBtn = document.getElementById('clearOnReloadBtn');
+    if (clearOnReloadBtn) {
+      // Load state from localStorage (default to true)
+      clearOnReload = localStorage.getItem('networkInspectorClearOnReload') !== 'false';
+      updateClearOnReloadButton();
+      
+      clearOnReloadBtn.addEventListener('click', () => {
+        clearOnReload = !clearOnReload;
+        localStorage.setItem('networkInspectorClearOnReload', clearOnReload.toString());
+        updateClearOnReloadButton();
+      });
+    }
+
     // Reattach when panel regains focus or becomes visible
     try {
-      window.addEventListener('focus', ensureDebuggerAttached);
+      window.addEventListener('focus', () => {
+        if (!useDevToolsNetworkAPI) {
+          ensureDebuggerAttached();
+        }
+      });
       document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') {
+        if (document.visibilityState === 'visible' && !useDevToolsNetworkAPI) {
           ensureDebuggerAttached();
         }
       });
@@ -646,6 +765,17 @@ function updateRecordingButton() {
   }
 }
 
+function updateClearOnReloadButton() {
+  const btn = document.getElementById('clearOnReloadBtn');
+  if (!btn) return;
+  
+  if (clearOnReload) {
+    btn.classList.add('active');
+  } else {
+    btn.classList.remove('active');
+  }
+}
+
 function updateDarkModeButton(isDarkMode) {
   const btn = document.getElementById('darkModeBtn');
   btn.textContent = isDarkMode ? '☀️' : '🌙';
@@ -661,15 +791,243 @@ function updateDarkModeButton(isDarkMode) {
   }
 }
 
+function setupDevToolsNetworkAPI() {
+  console.log('[Panel] Setting up chrome.devtools.network API...');
+  
+  if (typeof chrome === 'undefined' || !chrome.devtools || !chrome.devtools.network) {
+    console.error('[Panel] chrome.devtools.network API not available');
+    return;
+  }
+  
+  // Listen for completed requests
+  chrome.devtools.network.onRequestFinished.addListener((request) => {
+    if (!isRecording) {
+      return;
+    }
+    
+    try {
+      const url = request.request.url;
+      const method = request.request.method;
+      const status = request.response.status;
+      const type = request.response.content?.mimeType || 'unknown';
+      
+      // Generate a unique request ID
+      const requestId = `devtools-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
+      // Extract headers
+      const requestHeaders = {};
+      if (request.request.headers) {
+        request.request.headers.forEach(header => {
+          requestHeaders[header.name] = header.value;
+        });
+      }
+      
+      const responseHeaders = {};
+      if (request.response.headers) {
+        request.response.headers.forEach(header => {
+          responseHeaders[header.name] = header.value;
+        });
+      }
+      
+      // Get request body if available
+      let requestBody = null;
+      if (request.request.postData) {
+        requestBody = request.request.postData.text || request.request.postData;
+      }
+      
+      // Get response body
+      request.getContent((content, encoding) => {
+        const responseBody = content;
+        const responseBase64Encoded = encoding === 'base64';
+        
+        // Create request object compatible with our RequestManager
+        const requestData = {
+          requestId: requestId,
+          url: url,
+          method: method,
+          status: status,
+          type: type,
+          requestHeaders: requestHeaders,
+          responseHeaders: responseHeaders,
+          requestBody: requestBody,
+          responseBody: responseBody,
+          responseBase64Encoded: responseBase64Encoded,
+          timestamp: request.startedDateTime ? new Date(request.startedDateTime).getTime() : Date.now(),
+          time: request.time || 0
+        };
+        
+        // Add to request manager
+        requestManager.addRequest(requestData);
+        renderRequestList();
+      });
+      
+    } catch (err) {
+      console.error('[Panel] Error processing chrome.devtools.network request:', err);
+    }
+  });
+  
+  // Listen for navigation to clear requests
+  if (chrome.devtools.network.onNavigated) {
+    chrome.devtools.network.onNavigated.addListener(() => {
+      console.log('[Panel] Navigation detected via chrome.devtools.network');
+      if (clearOnReload) {
+        requestManager.clearRequests();
+        pageStartTime = Date.now();
+        renderRequestList();
+      } else {
+        console.log('[Panel] Keeping requests (clearOnReload is disabled)');
+        if (!pageStartTime) {
+          pageStartTime = Date.now();
+        }
+      }
+    });
+  }
+  
+  // Also use inspectedWindow.onNavigated as backup
+  if (chrome.devtools.inspectedWindow.onNavigated) {
+    chrome.devtools.inspectedWindow.onNavigated.addListener(() => {
+      console.log('[Panel] Navigation detected via inspectedWindow.onNavigated');
+      if (clearOnReload) {
+        requestManager.clearRequests();
+        pageStartTime = Date.now();
+        renderRequestList();
+      } else {
+        console.log('[Panel] Keeping requests (clearOnReload is disabled)');
+        if (!pageStartTime) {
+          pageStartTime = Date.now();
+        }
+      }
+    });
+  }
+  
+  console.log('[Panel] ✅ chrome.devtools.network API setup complete');
+}
+
+function showNotification(message, duration = 3000) {
+  // Remove any existing notification
+  const existing = document.getElementById('debuggerNotification');
+  if (existing) {
+    existing.remove();
+  }
+  
+  // Create notification element
+  const notification = document.createElement('div');
+  notification.id = 'debuggerNotification';
+  notification.textContent = message;
+  notification.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: #333;
+    color: white;
+    padding: 12px 20px;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    z-index: 10000;
+    font-size: 13px;
+    max-width: 400px;
+    cursor: default;
+  `;
+  
+  // Add to body
+  document.body.appendChild(notification);
+  
+  // Remove after duration
+  setTimeout(() => {
+    if (notification.parentNode) {
+      notification.style.opacity = '0';
+      notification.style.transition = 'opacity 0.3s';
+      setTimeout(() => {
+        if (notification.parentNode) {
+          notification.remove();
+        }
+      }, 300);
+    }
+  }, duration);
+}
+
+function showNotificationWithReload(message, onReload) {
+  // Remove any existing notification
+  const existing = document.getElementById('debuggerNotification');
+  if (existing) {
+    existing.remove();
+  }
+  
+  // Create notification element with reload button
+  const notification = document.createElement('div');
+  notification.id = 'debuggerNotification';
+  notification.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: #333;
+    color: white;
+    padding: 12px 20px;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    z-index: 10000;
+    font-size: 13px;
+    max-width: 400px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  `;
+  
+  const messageText = document.createElement('span');
+  messageText.textContent = message;
+  notification.appendChild(messageText);
+  
+  const reloadBtn = document.createElement('button');
+  reloadBtn.textContent = 'Reload';
+  reloadBtn.style.cssText = `
+    background: #4CAF50;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: bold;
+  `;
+  reloadBtn.addEventListener('click', () => {
+    if (onReload) onReload();
+    if (notification.parentNode) {
+      notification.remove();
+    }
+  });
+  notification.appendChild(reloadBtn);
+  
+  // Add to body
+  document.body.appendChild(notification);
+  
+  // Remove after 10 seconds if not clicked
+  setTimeout(() => {
+    if (notification.parentNode) {
+      notification.style.opacity = '0';
+      notification.style.transition = 'opacity 0.3s';
+      setTimeout(() => {
+        if (notification.parentNode) {
+          notification.remove();
+        }
+      }, 300);
+    }
+  }, 10000);
+}
+
 function safeSendMessage(message, callback) {
   try {
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
+      console.log('[Panel] Sending message to background:', message.action, 'tabId:', message.tabId);
       chrome.runtime.sendMessage(message, (response) => {
         if (chrome.runtime.lastError) {
           // Log error but don't spam console
+          console.error('[Panel] ❌ Failed to send message:', message.action, 'Error:', chrome.runtime.lastError.message);
           if (message.action === 'attachDebugger') {
-            console.warn('[Panel] Failed to send attachDebugger message:', chrome.runtime.lastError.message);
+            console.error('[Panel] This might indicate the background script is not running in incognito mode.');
+            console.error('[Panel] Check: chrome://extensions → Network Debugger Plus → Service worker → Inspect');
           }
+        } else {
+          console.log('[Panel] ✅ Message sent successfully:', message.action);
         }
         if (callback) callback(response);
       });
@@ -681,6 +1039,16 @@ function safeSendMessage(message, callback) {
 }
 
 function attachDebugger() {
+  if (!tabId) {
+    console.error('[Panel] ⚠️ Cannot attach debugger - tabId not set!');
+    console.error('[Panel] This usually means the extension is not properly initialized.');
+    console.error('[Panel] In incognito mode, make sure:');
+    console.error('[Panel] 1. Extension is enabled for incognito (chrome://extensions → Details → Allow in incognito)');
+    console.error('[Panel] 2. Close and reopen the incognito window');
+    console.error('[Panel] 3. Reload the extension');
+    return;
+  }
+  
   console.log('[Panel] Attempting to attach debugger for tab:', tabId);
   safeSendMessage({
     action: 'attachDebugger',
@@ -695,16 +1063,34 @@ function attachDebugger() {
 }
 
 async function ensureDebuggerAttached() {
+  if (useDevToolsNetworkAPI) {
+    // Using chrome.devtools.network, don't try to attach debugger
+    return;
+  }
+  
   try {
-    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) return;
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) {
+      console.warn('[Panel] Chrome runtime not available for debugger attachment check');
+      return;
+    }
     chrome.runtime.sendMessage({ action: 'isAttached', tabId }, (resp) => {
+      if (chrome.runtime.lastError) {
+        console.error('[Panel] Error checking debugger attachment:', chrome.runtime.lastError.message);
+        // Try to attach anyway
+        safeSendMessage({ action: 'attachDebugger', tabId });
+        return;
+      }
+      
       // If service worker was restarted, resp may be undefined briefly; try attaching
       const attached = resp && resp.attached;
+      console.log('[Panel] Debugger attachment status:', attached ? '✅ Attached' : '❌ Not attached');
       if (!attached) {
+        console.log('[Panel] Attempting to attach debugger...');
         safeSendMessage({ action: 'attachDebugger', tabId });
       }
     });
-  } catch (_) {
+  } catch (err) {
+    console.error('[Panel] Error in ensureDebuggerAttached:', err);
     // Best-effort attach
     safeSendMessage({ action: 'reattachDebugger', tabId });
   }
@@ -1073,23 +1459,55 @@ function handleResponseExtraInfo(params) {
   });
 }
 
+function closeFormDataContextMenu() {
+  // Close any open form data context menus
+  if (globalFormDataContextMenu) {
+    try {
+      globalFormDataContextMenu.remove();
+    } catch (e) {
+      // Menu might already be removed
+    }
+    globalFormDataContextMenu = null;
+  }
+  
+  // Also close any context menus that might exist in the DOM
+  const existingMenus = document.querySelectorAll('.form-data-context-menu');
+  existingMenus.forEach(menu => {
+    try {
+      menu.remove();
+    } catch (e) {
+      // Ignore errors
+    }
+  });
+}
+
 function handlePageNavigated(params) {
   const { frame } = params;
   
   // Only clear on main frame navigation (page refresh/navigation)
   // Ignore iframe navigations
   if (!frame.parentId) {
-    // Clear requests on navigation to match Chrome DevTools behavior
-    // This gives us a fresh count for each page load
-    console.log('Page navigated, clearing requests');
-    requestManager.clearRequests();
-    selectedRequestId = null;
-    pageStartTime = Date.now();
-    domContentLoadedTime = null;
-    loadTime = null;
-    renderRequestList();
-    updateFooterStats();
-    hideRequestDetails();
+    // Close context menu only on main frame navigation (actual page change)
+    closeFormDataContextMenu();
+    
+    // Clear requests on navigation only if clearOnReload is enabled
+    if (clearOnReload) {
+      console.log('Page navigated, clearing requests (clearOnReload is enabled)');
+      requestManager.clearRequests();
+      selectedRequestId = null;
+      pageStartTime = Date.now();
+      domContentLoadedTime = null;
+      loadTime = null;
+      renderRequestList();
+      updateFooterStats();
+      hideRequestDetails();
+    } else {
+      console.log('Page navigated, keeping requests (clearOnReload is disabled)');
+      // Still update pageStartTime for timing calculations
+      if (!pageStartTime) {
+        pageStartTime = Date.now();
+      }
+    }
     
     // Ensure debugger is attached immediately after navigation
     // This is critical to capture early requests
@@ -1100,6 +1518,9 @@ function handlePageNavigated(params) {
 }
 
 function handleDOMContentLoaded(params) {
+  // Don't close context menu on DOM content loaded - this fires during normal page loading
+  // and shouldn't interfere with the user's context menu
+  
   if (!pageStartTime) {
     pageStartTime = Date.now();
   }
@@ -1108,6 +1529,9 @@ function handleDOMContentLoaded(params) {
 }
 
 function handleLoadEvent(params) {
+  // Don't close context menu on page load - this fires during normal page loading
+  // and shouldn't interfere with the user's context menu
+  
   if (!pageStartTime) {
     pageStartTime = Date.now();
   }
@@ -1450,6 +1874,9 @@ function showRequestDetails(requestId) {
     return;
   }
 
+  // Close context menu when switching to a different request
+  closeFormDataContextMenu();
+
   const detailsPanel = document.getElementById('requestDetails');
   const resizeHandle = document.getElementById('resizeHandle');
   
@@ -1463,8 +1890,25 @@ function showRequestDetails(requestId) {
   resizeHandle.classList.add('visible');
   
   // Restore saved width if available
+  // Restore saved width (prefer percentage for responsive resizing)
+  const savedWidthPercent = localStorage.getItem('networkInspectorDetailsWidthPercent');
   const savedWidth = localStorage.getItem('networkInspectorDetailsWidth');
-  if (savedWidth) {
+  
+  if (savedWidthPercent) {
+    // Use percentage-based width for responsive behavior
+    const mainContent = document.querySelector('.main-content');
+    if (mainContent && mainContent.offsetWidth > 0) {
+      const percentage = parseFloat(savedWidthPercent);
+      const widthPx = (mainContent.offsetWidth * percentage) / 100;
+      // Constrain to min/max
+      const minWidth = 200;
+      const maxWidth = mainContent.offsetWidth * 0.95;
+      const constrainedWidth = Math.max(minWidth, Math.min(maxWidth, widthPx));
+      detailsPanel.style.width = constrainedWidth + 'px';
+    } else if (savedWidth) {
+      detailsPanel.style.width = savedWidth;
+    }
+  } else if (savedWidth) {
     detailsPanel.style.width = savedWidth;
   }
 
@@ -1579,6 +2023,9 @@ function hideRequestDetails() {
   selectedRequestId = null;
   const detailsPanel = document.getElementById('requestDetails');
   const resizeHandle = document.getElementById('resizeHandle');
+  
+  // Close any open form data context menus
+  closeFormDataContextMenu();
   
   detailsPanel.classList.add('hidden');
   resizeHandle.classList.remove('visible');
@@ -1910,7 +2357,7 @@ function clearHighlightsInContainer(container) {
   });
 }
 
-function renderFormData(container, formData, requestUrl, title = 'Form Data') {
+function renderFormData(container, formData, requestUrl, title = 'Form Data   (right click to select values)') {
   // Set request URL on container for context menu storage
   if (container && requestUrl) {
     container.setAttribute('data-request-url', requestUrl);
@@ -1939,7 +2386,18 @@ function renderFormData(container, formData, requestUrl, title = 'Form Data') {
         const titleEl = document.createElement('h4');
         titleEl.style.margin = '0';
         titleEl.style.flexShrink = '0';
-        titleEl.textContent = title;
+        
+        // Split title to make instruction text non-bold
+        if (title.includes('(right click to select values)')) {
+          // Extract main text (everything before the parenthesis)
+          const parenIndex = title.indexOf('(right click to select values)');
+          const mainText = title.substring(0, parenIndex).trim();
+          // Ensure 3 spaces before the parenthesis using non-breaking spaces
+          titleEl.innerHTML = `${mainText}&nbsp;&nbsp;&nbsp;<span style="font-weight: normal;">(right click to select values)</span>`;
+        } else {
+          titleEl.textContent = title;
+        }
+        
         titleRow.appendChild(titleEl);
         
         const searchContainer = document.createElement('div');
@@ -1977,7 +2435,16 @@ function renderFormData(container, formData, requestUrl, title = 'Form Data') {
       // Update existing title if different
       const titleEl = titleContainer.querySelector('h4');
       if (titleEl) {
-        titleEl.textContent = title;
+        // Split title to make instruction text non-bold
+        if (title.includes('(right click to select values)')) {
+          // Extract main text (everything before the parenthesis)
+          const parenIndex = title.indexOf('(right click to select values)');
+          const mainText = title.substring(0, parenIndex).trim();
+          // Ensure 3 spaces before the parenthesis using non-breaking spaces
+          titleEl.innerHTML = `${mainText}&nbsp;&nbsp;&nbsp;<span style="font-weight: normal;">(right click to select values)</span>`;
+        } else {
+          titleEl.textContent = title;
+        }
       }
     }
     // Show the title container when form data is rendered
@@ -2032,8 +2499,26 @@ function renderFormData(container, formData, requestUrl, title = 'Form Data') {
         setupHighlightColumnResize(resizeHandle2, header);
       }
       
-      // Setup context menu for key visibility
+      // Setup context menu for key visibility on header
       setupFormDataHeaderContextMenu(header, formData, container);
+      
+      // Also setup context menu on the entire title container area (except search box)
+      // This allows right-clicking anywhere in the Form Data title area
+      const titleRow = titleContainer.querySelector('div[style*="display: flex"]');
+      if (titleRow) {
+        // Attach the same context menu handler to the titleRow
+        // The function will work with any element that has the formData and container
+        setupFormDataHeaderContextMenu(titleRow, formData, container);
+        
+        // But we need to prevent it from triggering on the search container
+        const searchContainer = titleRow.querySelector('.details-search-container');
+        if (searchContainer) {
+          searchContainer.addEventListener('contextmenu', (e) => {
+            // Stop propagation so the titleRow handler doesn't fire
+            e.stopPropagation();
+          });
+        }
+      }
     }
   }
   
@@ -2052,26 +2537,50 @@ function renderFormData(container, formData, requestUrl, title = 'Form Data') {
     document.documentElement.style.setProperty('--form-highlight-width', savedHighlightWidth);
   }
   
-  // Get visible keys for filtering
-  const requestUrlForStorage = requestUrl || '';
-  const storageKey = `networkInspectorVisibleKeys_${requestUrlForStorage}`;
+  // Get visible keys for filtering - use global storage per key name (not per request URL)
+  const selectAllModeEnabled = localStorage.getItem('networkInspectorSelectAllMode') === 'true';
+  const globalVisibleKeysStorageKey = 'networkInspectorVisibleKeys_global';
+  
   let visibleKeys = new Set(Object.keys(formData));
   try {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      visibleKeys = new Set(JSON.parse(saved));
+    const saved = localStorage.getItem(globalVisibleKeysStorageKey);
+    if (saved !== null && !selectAllModeEnabled) {
+      // Only use saved keys if select all mode is not enabled
+      // saved can be an empty string or a JSON array
+      const savedKeys = JSON.parse(saved);
+      // Only show keys that are in both the saved list and current form data
+      // If savedKeys is empty array, show nothing (all deselected)
+      if (Array.isArray(savedKeys) && savedKeys.length === 0) {
+        visibleKeys = new Set();
+      } else if (Array.isArray(savedKeys)) {
+        visibleKeys = new Set(Object.keys(formData).filter(key => savedKeys.includes(key)));
+      } else {
+        // Invalid format, default to showing all
+        visibleKeys = new Set(Object.keys(formData));
+      }
+    } else if (selectAllModeEnabled) {
+      // If select all mode is enabled, show all keys
+      visibleKeys = new Set(Object.keys(formData));
+    } else if (saved === null) {
+      // If no saved keys and select all mode is disabled, default to showing all keys
+      visibleKeys = new Set(Object.keys(formData));
     }
   } catch (e) {
     // Use all keys if error loading
+    console.warn('Error loading visible keys from global storage:', e);
+    visibleKeys = new Set(Object.keys(formData));
   }
   
   Object.entries(formData).forEach(([key, value]) => {
     const row = document.createElement('div');
     row.className = 'form-data-row';
     
-    // Hide row if key is not visible
+    // Hide row if key is not visible - explicitly set display
     if (!visibleKeys.has(key)) {
       row.style.display = 'none';
+    } else {
+      // Explicitly set display to flex to ensure it's visible
+      row.style.display = 'flex';
     }
     
     const keyCell = document.createElement('div');
@@ -2144,8 +2653,8 @@ function renderFormData(container, formData, requestUrl, title = 'Form Data') {
 }
 
 function getHighlightStorageKey(requestUrl, formKey) {
-  // Create a unique storage key for each request URL + form key combination
-  return `networkInspectorHighlight_${requestUrl}_${formKey}`;
+  // Use global storage per key name (not per request URL) so highlighting persists across requests
+  return `networkInspectorHighlight_${formKey}`;
 }
 
 function isJsonString(str) {
@@ -2296,6 +2805,9 @@ function setupResizeHandle() {
         isResizing = true;
         startX = e.clientX;
         startWidth = detailsPanel.offsetWidth;
+        // Store the container width at start of resize to calculate percentage
+        const containerWidth = mainContent.offsetWidth;
+        startContainerWidth = containerWidth;
         
         resizeHandle.classList.add('active');
         if (document.body) {
@@ -2362,12 +2874,19 @@ function setupResizeHandle() {
             document.body.style.userSelect = '';
           }
           
-          // Save width to localStorage
+          // Save width to localStorage (both pixel and percentage)
           if (currentDetailsPanel && currentDetailsPanel.style) {
             const currentWidth = currentDetailsPanel.style.width;
             if (currentWidth) {
               try {
                 localStorage.setItem('networkInspectorDetailsWidth', currentWidth);
+                // Also save as percentage for responsive resizing
+                const currentMainContent = document.querySelector('.main-content');
+                if (currentMainContent && currentMainContent.offsetWidth > 0) {
+                  const widthPx = parseFloat(currentWidth);
+                  const percentage = (widthPx / currentMainContent.offsetWidth) * 100;
+                  localStorage.setItem('networkInspectorDetailsWidthPercent', percentage.toString());
+                }
               } catch (err) {
                 // localStorage might be disabled or full - ignore
               }
@@ -2386,11 +2905,38 @@ function setupResizeHandle() {
       document.addEventListener('mousemove', mousemoveHandler);
       document.addEventListener('mouseup', mouseupHandler);
       
+      // Add resize observer to maintain details panel position when container resizes
+      const resizeObserver = new ResizeObserver((entries) => {
+        if (isResizing) return; // Don't adjust during active resize
+        
+        const currentDetailsPanel = document.getElementById('requestDetails');
+        const currentMainContent = document.querySelector('.main-content');
+        
+        if (!currentDetailsPanel || !currentMainContent || currentDetailsPanel.classList.contains('hidden')) {
+          return;
+        }
+        
+        // Get saved percentage and recalculate width
+        const savedWidthPercent = localStorage.getItem('networkInspectorDetailsWidthPercent');
+        if (savedWidthPercent && currentMainContent.offsetWidth > 0) {
+          const percentage = parseFloat(savedWidthPercent);
+          const widthPx = (currentMainContent.offsetWidth * percentage) / 100;
+          // Constrain to min/max
+          const minWidth = 200;
+          const maxWidth = currentMainContent.offsetWidth * 0.95;
+          const constrainedWidth = Math.max(minWidth, Math.min(maxWidth, widthPx));
+          currentDetailsPanel.style.width = constrainedWidth + 'px';
+        }
+      });
+      
+      resizeObserver.observe(mainContent);
+      
       // Store references for cleanup
       resizeEventListeners.push(
         { element: resizeHandle, event: 'mousedown', handler: mousedownHandler },
         { element: document, event: 'mousemove', handler: mousemoveHandler },
-        { element: document, event: 'mouseup', handler: mouseupHandler }
+        { element: document, event: 'mouseup', handler: mouseupHandler },
+        { observer: resizeObserver, element: mainContent } // Store observer for cleanup
       );
     } catch (err) {
       // If adding listeners fails, just return silently
@@ -2406,9 +2952,15 @@ function setupResizeHandle() {
 
 function cleanupResizeListeners() {
   try {
-    resizeEventListeners.forEach(({ element, event, handler }) => {
+    resizeEventListeners.forEach(({ element, event, handler, observer }) => {
       try {
-        element.removeEventListener(event, handler);
+        if (observer) {
+          // Disconnect ResizeObserver
+          observer.disconnect();
+        } else if (element && event && handler) {
+          // Remove event listener
+          element.removeEventListener(event, handler);
+        }
       } catch (err) {
         // Ignore cleanup errors
       }
@@ -2528,32 +3080,84 @@ function setupHighlightColumnResize(resizeHandle, header) {
   });
 }
 
-function setupFormDataHeaderContextMenu(header, formData, container) {
-  // Get request URL for storage key
-  const requestUrl = container.getAttribute('data-request-url') || '';
-  const storageKey = `networkInspectorVisibleKeys_${requestUrl}`;
+// Global context menu reference for closing on navigation
+let globalFormDataContextMenu = null;
+
+function setupFormDataHeaderContextMenu(element, formData, container) {
+  // element can be the header, titleRow, or any element we want to attach the context menu to
+  // Use global storage per key name (not per request URL) so visibility persists across requests
+  const globalVisibleKeysStorageKey = 'networkInspectorVisibleKeys_global';
+  
+  // Check if "select all" mode is globally enabled
+  const selectAllModeEnabled = localStorage.getItem('networkInspectorSelectAllMode') === 'true';
   
   // Load visible keys from localStorage (default: all keys visible)
   let visibleKeys = new Set(Object.keys(formData));
   try {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      visibleKeys = new Set(JSON.parse(saved));
+    const saved = localStorage.getItem(globalVisibleKeysStorageKey);
+    if (saved !== null && !selectAllModeEnabled) {
+      const savedKeys = JSON.parse(saved);
+      // If savedKeys is empty array, show nothing (all deselected)
+      if (Array.isArray(savedKeys) && savedKeys.length === 0) {
+        visibleKeys = new Set();
+      } else if (Array.isArray(savedKeys)) {
+        // Only show keys that are in both the saved list and current form data
+        visibleKeys = new Set(Object.keys(formData).filter(key => savedKeys.includes(key)));
+      } else {
+        // Invalid format, default to showing all
+        visibleKeys = new Set(Object.keys(formData));
+      }
+    } else if (selectAllModeEnabled) {
+      // If select all mode is enabled, show all keys
+      visibleKeys = new Set(Object.keys(formData));
+    } else if (saved === null) {
+      // If no saved keys and select all mode is disabled, default to showing all keys
+      visibleKeys = new Set(Object.keys(formData));
     }
   } catch (e) {
     console.warn('Error loading visible keys:', e);
+    visibleKeys = new Set(Object.keys(formData));
+  }
+  
+  // If select all mode is enabled, ensure all current keys are visible
+  if (selectAllModeEnabled) {
+    Object.keys(formData).forEach(key => visibleKeys.add(key));
   }
   
   // Create context menu element
   let contextMenu = null;
+  globalFormDataContextMenu = contextMenu;
   
-  header.addEventListener('contextmenu', (e) => {
+  element.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     e.stopPropagation();
     
-    // Remove existing context menu if any
+    // Close any existing context menu first (using the global function to ensure cleanup)
+    closeFormDataContextMenu();
+    
+    // Also remove local reference if it exists
     if (contextMenu) {
       contextMenu.remove();
+      contextMenu = null;
+    }
+    
+    // Re-read global storage fresh when menu opens to ensure we have latest state
+    const currentSelectAllMode = localStorage.getItem('networkInspectorSelectAllMode') === 'true';
+    const currentGlobal = localStorage.getItem(globalVisibleKeysStorageKey);
+    let currentVisibleKeys = new Set(Object.keys(formData));
+    if (currentGlobal && !currentSelectAllMode) {
+      try {
+        const savedKeys = JSON.parse(currentGlobal);
+        if (savedKeys.length === 0) {
+          currentVisibleKeys = new Set();
+        } else {
+          currentVisibleKeys = new Set(Object.keys(formData).filter(key => savedKeys.includes(key)));
+        }
+      } catch (e) {
+        console.warn('Error reading global visible keys:', e);
+      }
+    } else if (currentSelectAllMode) {
+      currentVisibleKeys = new Set(Object.keys(formData));
     }
     
     // Create context menu
@@ -2563,6 +3167,7 @@ function setupFormDataHeaderContextMenu(header, formData, container) {
     contextMenu.style.left = `${e.clientX}px`;
     contextMenu.style.top = `${e.clientY}px`;
     contextMenu.style.zIndex = '10000';
+    globalFormDataContextMenu = contextMenu;
     
     // Create Select All / Deselect All toggle button
     const toggleAllItem = document.createElement('div');
@@ -2572,41 +3177,41 @@ function setupFormDataHeaderContextMenu(header, formData, container) {
     toggleAllButton.type = 'button';
     
     const allKeys = Object.keys(formData);
-    const allSelected = allKeys.every(key => visibleKeys.has(key));
-    toggleAllButton.textContent = allSelected ? 'Deselect All' : 'Select All';
+    const allSelected = allKeys.every(key => currentVisibleKeys.has(key));
+    toggleAllButton.textContent = (allSelected || currentSelectAllMode) ? 'Deselect All' : 'Select All';
     
     toggleAllButton.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       
-      // Recalculate current state dynamically
-      const currentlyAllSelected = allKeys.every(key => visibleKeys.has(key));
+      // Re-read current state from global storage to ensure accuracy
+      const currentlySelectAllMode = localStorage.getItem('networkInspectorSelectAllMode') === 'true';
+      const currentGlobal = localStorage.getItem(globalVisibleKeysStorageKey);
+      let currentGlobalKeys = currentGlobal ? new Set(JSON.parse(currentGlobal)) : new Set();
+      const currentlyAllSelected = allKeys.every(key => currentGlobalKeys.has(key) || currentlySelectAllMode);
       
-      if (currentlyAllSelected) {
-        // Deselect all
-        visibleKeys.clear();
+      if (currentlyAllSelected || currentlySelectAllMode) {
+        // Deselect all - disable select all mode and clear global storage
+        currentVisibleKeys.clear();
+        localStorage.setItem('networkInspectorSelectAllMode', 'false');
+        localStorage.setItem(globalVisibleKeysStorageKey, JSON.stringify([]));
         toggleAllButton.textContent = 'Select All';
       } else {
-        // Select all
-        allKeys.forEach(key => visibleKeys.add(key));
+        // Select all - enable select all mode globally and add all keys
+        allKeys.forEach(key => currentVisibleKeys.add(key));
+        localStorage.setItem('networkInspectorSelectAllMode', 'true');
+        localStorage.setItem(globalVisibleKeysStorageKey, JSON.stringify(Array.from(currentVisibleKeys)));
         toggleAllButton.textContent = 'Deselect All';
       }
       
       // Update all checkboxes
       const checkboxes = contextMenu.querySelectorAll('input[type="checkbox"]');
       checkboxes.forEach(checkbox => {
-        checkbox.checked = !currentlyAllSelected;
+        checkbox.checked = !currentlyAllSelected && !currentlySelectAllMode;
       });
       
-      // Save to localStorage
-      try {
-        localStorage.setItem(storageKey, JSON.stringify(Array.from(visibleKeys)));
-      } catch (err) {
-        console.warn('Error saving visible keys:', err);
-      }
-      
-      // Filter rows
-      filterFormDataRows(container, visibleKeys);
+      // Filter rows using updated currentVisibleKeys
+      filterFormDataRows(container, currentVisibleKeys);
     });
     
     toggleAllItem.appendChild(toggleAllButton);
@@ -2617,6 +3222,17 @@ function setupFormDataHeaderContextMenu(header, formData, container) {
     separator.className = 'form-data-context-menu-separator';
     contextMenu.appendChild(separator);
     
+    // Read global storage once before the loop for performance
+    const currentGlobalForCheckboxes = localStorage.getItem(globalVisibleKeysStorageKey);
+    let globalVisibleKeysForCheckboxes = new Set();
+    if (currentGlobalForCheckboxes) {
+      try {
+        globalVisibleKeysForCheckboxes = new Set(JSON.parse(currentGlobalForCheckboxes));
+      } catch (e) {
+        console.warn('Error parsing global visible keys for checkboxes:', e);
+      }
+    }
+    
     // Create menu items for each key
     const keys = Object.keys(formData).sort();
     keys.forEach(key => {
@@ -2625,7 +3241,9 @@ function setupFormDataHeaderContextMenu(header, formData, container) {
       
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
-      checkbox.checked = visibleKeys.has(key);
+      // Check global storage to see if this key should be visible
+      // Use pre-parsed globalVisibleKeysForCheckboxes for performance
+      checkbox.checked = currentSelectAllMode || globalVisibleKeysForCheckboxes.has(key);
       checkbox.id = `key-checkbox-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${key.replace(/[^a-zA-Z0-9]/g, '-')}`;
       
       const label = document.createElement('label');
@@ -2634,29 +3252,50 @@ function setupFormDataHeaderContextMenu(header, formData, container) {
       label.className = 'form-data-context-menu-label';
       
       checkbox.addEventListener('change', (e) => {
+        // Update local currentVisibleKeys set (the one read fresh when menu opened)
         if (e.target.checked) {
-          visibleKeys.add(key);
+          currentVisibleKeys.add(key);
         } else {
-          visibleKeys.delete(key);
+          currentVisibleKeys.delete(key);
         }
         
-        // Update toggle all button text
-        const allKeys = Object.keys(formData);
-        const allSelected = allKeys.every(k => visibleKeys.has(k));
-        const toggleBtn = contextMenu.querySelector('.form-data-context-menu-toggle-btn');
-        if (toggleBtn) {
-          toggleBtn.textContent = allSelected ? 'Deselect All' : 'Select All';
-        }
-        
-        // Save to localStorage
+        // Save to localStorage immediately - use global storage per key name
         try {
-          localStorage.setItem(storageKey, JSON.stringify(Array.from(visibleKeys)));
+          // Get current global visible keys fresh
+          const currentGlobal = localStorage.getItem(globalVisibleKeysStorageKey);
+          let globalVisibleKeys = currentGlobal ? new Set(JSON.parse(currentGlobal)) : new Set();
+          
+          // Update global set with current changes
+          if (e.target.checked) {
+            globalVisibleKeys.add(key);
+          } else {
+            globalVisibleKeys.delete(key);
+          }
+          
+          // Save updated global storage
+          localStorage.setItem(globalVisibleKeysStorageKey, JSON.stringify(Array.from(globalVisibleKeys)));
+          
+          // If unchecking a key while select all mode is enabled, disable select all mode
+          if (!e.target.checked && currentSelectAllMode) {
+            localStorage.setItem('networkInspectorSelectAllMode', 'false');
+          }
         } catch (err) {
           console.warn('Error saving visible keys:', err);
         }
         
-        // Filter rows
-        filterFormDataRows(container, visibleKeys);
+        // Update toggle all button text based on current state
+        const allKeys = Object.keys(formData);
+        const currentGlobalAfter = localStorage.getItem(globalVisibleKeysStorageKey);
+        let globalKeysAfter = currentGlobalAfter ? new Set(JSON.parse(currentGlobalAfter)) : new Set();
+        const allSelected = allKeys.every(k => globalKeysAfter.has(k));
+        const selectAllModeEnabledAfter = localStorage.getItem('networkInspectorSelectAllMode') === 'true';
+        const toggleBtn = contextMenu.querySelector('.form-data-context-menu-toggle-btn');
+        if (toggleBtn) {
+          toggleBtn.textContent = (allSelected || selectAllModeEnabledAfter) ? 'Deselect All' : 'Select All';
+        }
+        
+        // Filter rows using updated currentVisibleKeys
+        filterFormDataRows(container, currentVisibleKeys);
       });
       
       menuItem.appendChild(checkbox);
@@ -2668,10 +3307,11 @@ function setupFormDataHeaderContextMenu(header, formData, container) {
     
     // Close menu when clicking outside
     const closeMenu = (e) => {
-      if (contextMenu && !contextMenu.contains(e.target) && e.target !== header) {
+      if (contextMenu && !contextMenu.contains(e.target) && e.target !== element) {
         if (contextMenu) {
           contextMenu.remove();
           contextMenu = null;
+          globalFormDataContextMenu = null;
         }
         document.removeEventListener('click', closeMenu);
         document.removeEventListener('contextmenu', closeMenu);

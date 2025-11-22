@@ -73,6 +73,16 @@ body {
   background: #f0f0f0;
 }
 
+.btn-warning {
+  background: #ff9800;
+  color: white;
+  border: 1px solid #f57c00;
+}
+
+.btn-warning:hover {
+  background: #f57c00;
+}
+
 .btn-icon {
   padding: 6px 10px;
   font-size: 16px;
@@ -155,11 +165,47 @@ body {
   gap: 12px;
 }
 
+.filter-controls-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 24px;
+}
+
 .filter-buttons {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+}
+
+.clear-on-reload-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.clear-on-reload-btn .check-icon {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  line-height: 16px;
+  text-align: center;
+  background: #4CAF50;
+  color: white;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: bold;
+  border: 2px solid #4CAF50;
+  box-sizing: border-box;
+}
+
+.clear-on-reload-btn:not(.active) .check-icon {
+  background: transparent;
+  border: 2px solid #999;
+  color: transparent;
 }
 
 .filter-btn {
@@ -1179,6 +1225,16 @@ body.dark-mode .btn-secondary:hover {
   background: #464647;
 }
 
+body.dark-mode .btn-warning {
+  background: #cc6600;
+  color: white;
+  border: 1px solid #b35900;
+}
+
+body.dark-mode .btn-warning:hover {
+  background: #b35900;
+}
+
 body.dark-mode .btn-icon {
   background: #3c3c3c;
   border: 1px solid #3e3e42;
@@ -1226,6 +1282,27 @@ body.dark-mode .btn-close:hover {
 body.dark-mode .filter-section {
   background: #252526;
   border-bottom: 1px solid #3e3e42;
+}
+
+body.dark-mode .clear-on-reload-btn {
+  background: #3c3c3c;
+  color: #cccccc;
+  border: 1px solid #3e3e42;
+}
+
+body.dark-mode .clear-on-reload-btn:hover {
+  background: #464647;
+}
+
+body.dark-mode .clear-on-reload-btn.active .check-icon {
+  background: #4CAF50;
+  border: 2px solid #4CAF50;
+}
+
+body.dark-mode .clear-on-reload-btn:not(.active) .check-icon {
+  background: transparent;
+  border: 2px solid #666;
+  color: transparent;
 }
 
 body.dark-mode .filter-group label {

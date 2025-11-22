@@ -2,6 +2,8 @@
 let attachedTabs = new Map();
 // Queue to store messages if panel isn't ready yet
 let messageQueue = new Map(); // tabId -> array of messages
+// Store port connections from DevTools panels
+let panelPorts = new Map(); // tabId -> port
 // Count requests captured by background (service workers don't have window)
 let bgRequestCount = 0;
 
@@ -11,9 +13,64 @@ chrome.action.onClicked.addListener((tab) => {
   console.log('[Network Debugger Plus] Open Chrome DevTools (F12) and look for the "Network Debugger Plus" tab to use this extension.');
 });
 
+// Handle persistent port connections from DevTools panels
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'devtools-panel') {
+    console.log('[Background] DevTools panel connected via port');
+    
+    // Listen for messages from the panel
+    port.onMessage.addListener((message) => {
+      if (message.action === 'panelReady') {
+        const tabId = message.tabId;
+        console.log('[Background] Panel ready via port for tab:', tabId);
+        
+        // Store the port connection
+        panelPorts.set(tabId, port);
+        
+        // Send any queued messages through the port
+        if (messageQueue.has(tabId)) {
+          const queue = messageQueue.get(tabId);
+          console.log('[Background] Sending', queue.length, 'queued messages via port for tab', tabId);
+          queue.forEach(msg => {
+            try {
+              port.postMessage(msg);
+            } catch (err) {
+              console.error('[Background] Error sending queued message via port:', err);
+            }
+          });
+          messageQueue.delete(tabId);
+        }
+        
+        // Send confirmation
+        try {
+          port.postMessage({ action: 'panelReadyConfirmed', queuedCount: messageQueue.has(tabId) ? messageQueue.get(tabId).length : 0 });
+        } catch (err) {
+          console.error('[Background] Error sending confirmation:', err);
+        }
+      }
+    });
+    
+    // Handle port disconnect
+    port.onDisconnect.addListener(() => {
+      console.log('[Background] DevTools panel disconnected');
+      // Remove port from map
+      for (const [tabId, p] of panelPorts.entries()) {
+        if (p === port) {
+          panelPorts.delete(tabId);
+          console.log('[Background] Removed port for tab:', tabId);
+          break;
+        }
+      }
+    });
+  }
+});
+
 // Listen for messages from the panel
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log('[Background] Received message:', message.action, 'for tab:', message.tabId);
+  
   if (message.action === 'attachDebugger') {
+    console.log('[Background] Processing attachDebugger request for tab:', message.tabId);
     attachDebugger(message.tabId);
     sendResponse({ success: true });
   } else if (message.action === 'detachDebugger') {
@@ -94,11 +151,36 @@ function attachDebugger(tabId) {
       });
       
       attachedTabs.set(tabId, true);
-      console.log('[Background] ✅ Debugger attached successfully to tab:', tabId);
-      console.log('[Background] ✅ Network and Page domains enabled. Ready to capture events from ALL frames.');
+      console.log('[Background] ✅✅✅ DEBUGGER FULLY CONFIGURED ✅✅✅');
+      console.log('[Background] ✅ Tab ID:', tabId);
+      console.log('[Background] ✅ Network domain: ENABLED');
+      console.log('[Background] ✅ Page domain: ENABLED');
+      console.log('[Background] ✅ Ready to capture events from ALL frames');
+      console.log('[Background] ========================================');
+      console.log('[Background] 📡 Now navigate to a website to see network requests');
+      console.log('[Background] 📡 You should see "🔔🔔🔔 DEBUGGER EVENT RECEIVED" messages when requests are made');
+      console.log('[Background] ⚠️ IMPORTANT: Make sure Chrome DevTools Network tab is NOT active');
+      console.log('[Background] ⚠️ Only the "Network Debugger Plus" tab should be active/selected');
+      console.log('[Background] ========================================');
       
       // Reset request counter when debugger attaches
       bgRequestCount = 0;
+      globalThis._bgTotalEvents = 0; // Reset event counter
+      
+      // Note: Removed Runtime.evaluate test command to reduce detectability
+      // Websites can detect debugger attachment through various means,
+      // so we avoid running any code in the page context
+      
+      // Set a timeout to check if we're receiving events
+      setTimeout(() => {
+        if (globalThis._bgTotalEvents === 0) {
+          console.error('[Background] ⚠️⚠️⚠️ NO DEBUGGER EVENTS RECEIVED AFTER 5 SECONDS ⚠️⚠️⚠️');
+          console.error('[Background] This usually means:');
+          console.error('[Background] 1. Chrome DevTools Network tab is active (switch to Network Debugger Plus tab)');
+          console.error('[Background] 2. No network requests are being made (try navigating to a website)');
+          console.error('[Background] 3. Debugger is not receiving events (check for errors above)');
+        }
+      }, 5000);
     });
   }
 }
@@ -113,12 +195,26 @@ function detachDebugger(tabId) {
       console.error('Debugger detach failed:', chrome.runtime.lastError);
     }
     attachedTabs.delete(tabId);
+    // Clean up port connection if it exists
+    if (panelPorts.has(tabId)) {
+      panelPorts.delete(tabId);
+      console.log('[Background] Removed port connection for tab:', tabId);
+    }
     console.log('Debugger detached from tab:', tabId);
   });
 }
 
 // Listen for debugger events
 chrome.debugger.onEvent.addListener((source, method, params) => {
+  // Log that we received ANY event from debugger (first few only)
+  // Note: Service workers don't have window, use globalThis or module-level variables
+  if (!globalThis._bgTotalEvents) globalThis._bgTotalEvents = 0;
+  globalThis._bgTotalEvents++;
+  if (globalThis._bgTotalEvents <= 10) {
+    console.log('[Background] 🔔🔔🔔 DEBUGGER EVENT RECEIVED 🔔🔔🔔');
+    console.log('[Background] 📨 Event #' + globalThis._bgTotalEvents + ':', method, 'from tab:', source.tabId);
+  }
+  
   // Forward network and page events to the panel
   if (method.startsWith('Network.') || method.startsWith('Page.')) {
     // Log for debugging - count all requests
@@ -129,30 +225,47 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       // Log first 20, then every 50th, and all Fetch/XHR
       const lowerType = type.toLowerCase();
       if (bgRequestCount <= 20 || bgRequestCount % 50 === 0 || lowerType === 'fetch' || lowerType === 'xhr') {
-        console.log('[Background] Captured request #' + bgRequestCount + ':', type, url.substring(0, 80));
+        console.log('[Background] 📡 Captured request #' + bgRequestCount + ':', type, url.substring(0, 80));
       }
     }
     
-    // Send message to panel - use sendMessage with error handling
+    // Send message to panel - prefer port connection, fallback to sendMessage
+    const message = {
+      action: 'networkEvent',
+      tabId: source.tabId,
+      method: method,
+      params: params
+    };
+    
     try {
-      chrome.runtime.sendMessage({
-        action: 'networkEvent',
-        tabId: source.tabId,
-        method: method,
-        params: params
-      }, (response) => {
+      // First, try to send via port connection (more reliable for DevTools panels)
+      const port = panelPorts.get(source.tabId);
+      if (port) {
+        try {
+          port.postMessage(message);
+          // Log successful sends (first few only)
+          if (!globalThis._bgSuccessCount) globalThis._bgSuccessCount = 0;
+          globalThis._bgSuccessCount++;
+          if (globalThis._bgSuccessCount <= 5 && method === 'Network.requestWillBeSent') {
+            console.log('[Background] ✅ Successfully sent network event via port:', method);
+          }
+          return; // Successfully sent via port, exit early
+        } catch (portErr) {
+          // Port might be disconnected, remove it and fall through to sendMessage
+          console.warn('[Background] Port send failed, removing port:', portErr);
+          panelPorts.delete(source.tabId);
+        }
+      }
+      
+      // Fallback to sendMessage if no port connection
+      chrome.runtime.sendMessage(message, (response) => {
         // Check if there was an error
         if (chrome.runtime.lastError) {
           // Panel might not be open yet - queue the message
           if (!messageQueue.has(source.tabId)) {
             messageQueue.set(source.tabId, []);
           }
-          messageQueue.get(source.tabId).push({
-            action: 'networkEvent',
-            tabId: source.tabId,
-            method: method,
-            params: params
-          });
+          messageQueue.get(source.tabId).push(message);
           
           // Log queued requests (especially Fetch/XHR)
           if (method === 'Network.requestWillBeSent') {
@@ -162,9 +275,16 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
               const queueSize = messageQueue.get(source.tabId)?.length || 0;
               // Log first few and then every 10th
               if (queueSize <= 3 || queueSize % 10 === 0) {
-                console.log('[Background] Queued', requestType, 'request (queue size:', queueSize, ')');
+                console.log('[Background] ⏳ Queued', requestType, 'request (queue size:', queueSize, ')');
               }
             }
+          }
+          
+          // Log first few errors to help diagnose
+          if (!globalThis._bgErrorCount) globalThis._bgErrorCount = 0;
+          globalThis._bgErrorCount++;
+          if (globalThis._bgErrorCount <= 5) {
+            console.warn('[Background] ⚠️ Failed to send network event to panel:', chrome.runtime.lastError.message, 'Event:', method);
           }
         } else {
           // Message was received successfully - panel is ready
@@ -172,14 +292,21 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
           if (messageQueue.has(source.tabId)) {
             const queueSize = messageQueue.get(source.tabId).length;
             if (queueSize > 0) {
-              console.log('[Background] Panel is ready, clearing', queueSize, 'queued messages (panel receiving directly now)');
+              console.log('[Background] ✅ Panel is ready, clearing', queueSize, 'queued messages (panel receiving directly now)');
             }
             messageQueue.delete(source.tabId);
+          }
+          
+          // Log successful sends (first few only)
+          if (!globalThis._bgSuccessCount) globalThis._bgSuccessCount = 0;
+          globalThis._bgSuccessCount++;
+          if (globalThis._bgSuccessCount <= 5 && method === 'Network.requestWillBeSent') {
+            console.log('[Background] ✅ Successfully sent network event to panel:', method);
           }
         }
       });
     } catch (err) {
-      // Ignore sendMessage errors - panel might not be open
+      console.error('[Background] ❌ Error sending network event:', err);
     }
   }
 });

@@ -204,6 +204,41 @@ This extension uses the Chrome Debugger API to:
 - Chrome usually remembers the last panel you were on (per window)
 - Simply click on the Network Debugger Plus tab once, and Chrome should default to it next time
 
+### No requests showing in Incognito Mode
+- **Extensions are disabled in incognito mode by default**
+- To enable the extension in incognito mode:
+  1. Go to `chrome://extensions/`
+  2. Find "Network Debugger Plus"
+  3. Click **"Details"**
+  4. Enable **"Allow in incognito"**
+- After enabling, the extension will work in incognito windows
+- Note: The debugger API works the same way in incognito mode once enabled
+
+### Website Detects Extension and Blocks Loading
+Some websites can detect when a debugger is attached and may refuse to load or behave differently. This is a limitation of using the Chrome Debugger API.
+
+**Why this happens:**
+- Websites can detect debugger attachment through timing analysis, performance API checks, or other fingerprinting techniques
+- Some anti-bot/anti-debugging systems block pages when debuggers are detected
+- This is a security feature some websites use to prevent automated access
+
+**What we've done to reduce detectability:**
+- Removed test commands that execute code in the page context
+- The extension only enables Network and Page domains (doesn't modify page behavior)
+- No code is injected into the page itself
+
+**Workarounds:**
+1. **Temporarily disable the extension** for that specific website:
+   - Go to `chrome://extensions/`
+   - Click "Details" on Network Debugger Plus
+   - Use "Site access" to block the extension for specific sites
+   
+2. **Use Chrome's built-in Network tab** instead (if the site blocks debugger extensions)
+
+3. **Contact the website owner** - Some sites may whitelist legitimate debugging tools
+
+**Note:** This is a known limitation of debugger-based extensions. The extension is designed to be as non-intrusive as possible, but some websites will still detect it.
+
 ## Future Enhancements
 
 Possible features to add:
